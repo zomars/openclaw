@@ -104,7 +104,7 @@ if (!g[WHATSAPP_ACTIVE_LISTENER_STATE_KEY]) {
     current: null,
   };
 }
-const state = g[WHATSAPP_ACTIVE_LISTENER_STATE_KEY]!;
+const state = g[WHATSAPP_ACTIVE_LISTENER_STATE_KEY];
 
 function setCurrentListener(listener: ActiveWebListener | null): void {
   state.current = listener;

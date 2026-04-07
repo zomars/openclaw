@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const noop = () => {};
 
@@ -99,8 +99,11 @@ vi.mock("./timeout.js", () => ({
 describe("subagent registry seam flow", () => {
   let mod: typeof import("./subagent-registry.js");
 
-  beforeEach(async () => {
-    vi.resetModules();
+  beforeAll(async () => {
+    mod = await import("./subagent-registry.js");
+  });
+
+  beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00Z"));
@@ -133,11 +136,25 @@ describe("subagent registry seam flow", () => {
       }
       return {};
     });
-    mod = await import("./subagent-registry.js");
+    mod.__testing.setDepsForTest({
+      callGateway: mocks.callGateway,
+      captureSubagentCompletionReply: mocks.captureSubagentCompletionReply,
+      getSubagentRunsSnapshotForRead: mocks.getSubagentRunsSnapshotForRead,
+      loadConfig: mocks.loadConfig,
+      onAgentEvent: mocks.onAgentEvent,
+      persistSubagentRunsToDisk: mocks.persistSubagentRunsToDisk,
+      resolveAgentTimeoutMs: mocks.resolveAgentTimeoutMs,
+      restoreSubagentRunsFromDisk: mocks.restoreSubagentRunsFromDisk,
+      runSubagentAnnounceFlow: mocks.runSubagentAnnounceFlow,
+      ensureContextEnginesInitialized: mocks.ensureContextEnginesInitialized,
+      ensureRuntimePluginsLoaded: mocks.ensureRuntimePluginsLoaded,
+      resolveContextEngine: mocks.resolveContextEngine,
+    });
     mod.resetSubagentRegistryForTests({ persist: false });
   });
 
   afterEach(() => {
+    mod.__testing.setDepsForTest();
     mod.resetSubagentRegistryForTests({ persist: false });
     vi.useRealTimers();
   });
@@ -277,7 +294,9 @@ describe("subagent registry seam flow", () => {
     await Promise.resolve();
 
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
-    expect(mocks.runSubagentEnded).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(mocks.runSubagentEnded).toHaveBeenCalledTimes(1);
+    });
     await vi.waitFor(() => {
       expect(mocks.onSubagentEnded).toHaveBeenCalledWith({
         childSessionKey: "agent:main:subagent:child",
@@ -505,5 +524,45 @@ describe("subagent registry seam flow", () => {
         workspaceDir: undefined,
       });
     });
+  });
+
+  it("loads plugin and context-engine runtime before released end hooks", async () => {
+    mod.addSubagentRunForTests({
+      runId: "run-release-context-engine",
+      childSessionKey: "agent:main:session:child",
+      controllerSessionKey: "agent:main:session:parent",
+      requesterSessionKey: "agent:main:session:parent",
+      requesterOrigin: undefined,
+      requesterDisplayKey: "parent",
+      task: "task",
+      cleanup: "keep",
+      expectsCompletionMessage: undefined,
+      spawnMode: "run",
+      workspaceDir: "/tmp/workspace",
+      createdAt: 1,
+      startedAt: 1,
+      sessionStartedAt: 1,
+      accumulatedRuntimeMs: 0,
+      cleanupHandled: false,
+    });
+
+    mod.releaseSubagentRun("run-release-context-engine");
+
+    await vi.waitFor(() => {
+      expect(mocks.onSubagentEnded).toHaveBeenCalledWith({
+        childSessionKey: "agent:main:session:child",
+        reason: "released",
+        workspaceDir: "/tmp/workspace",
+      });
+    });
+    expect(mocks.ensureRuntimePluginsLoaded).toHaveBeenCalledWith({
+      config: {
+        agents: { defaults: { subagents: { archiveAfterMinutes: 0 } } },
+        session: { mainKey: "main", scope: "per-sender" },
+      },
+      workspaceDir: "/tmp/workspace",
+      allowGatewaySubagentBinding: true,
+    });
+    expect(mocks.ensureContextEnginesInitialized).toHaveBeenCalledTimes(1);
   });
 });
