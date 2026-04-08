@@ -135,15 +135,12 @@ export async function checkInboundAccessControl(params: {
   // DM access control (secure defaults): "pairing" (default) / "allowlist" / "open" / "disabled".
   if (!params.group) {
     if (params.isFromMe && !isSamePhone) {
-      // Allow fromMe messages to pass through to hooks (for handoff detection)
-      // but mark them specially so plugins can detect account owner messages
-      logVerbose("Allowing outbound DM (fromMe) to reach hooks for handoff detection");
+      logVerbose("Skipping outbound DM (fromMe); no pairing reply needed.");
       return {
-        allowed: true,
+        allowed: false,
         shouldMarkRead: false,
         isSelfChat,
         resolvedAccountId: account.accountId,
-        isAccountOwnerMessage: true,
       };
     }
     if (access.decision === "block" && access.reason === "dmPolicy=disabled") {

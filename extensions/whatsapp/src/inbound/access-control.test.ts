@@ -70,6 +70,59 @@ describe("checkInboundAccessControl pairing grace", () => {
   });
 });
 
+describe("fromMe outbound DM suppression", () => {
+  it("blocks outbound DMs (fromMe) to other numbers — never reaches the agent", async () => {
+    setAccessControlTestConfig({
+      channels: {
+        whatsapp: {
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
+      },
+    });
+
+    const result = await checkInboundAccessControl({
+      accountId: "default",
+      from: "+15550001111",
+      selfE164: "+15550009999",
+      senderE164: "+15550001111",
+      group: false,
+      pushName: "Lead",
+      isFromMe: true,
+      sock: { sendMessage: sendMessageMock },
+      remoteJid: "15550001111@s.whatsapp.net",
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("allows self-chat fromMe messages (same phone)", async () => {
+    setAccessControlTestConfig({
+      channels: {
+        whatsapp: {
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
+      },
+    });
+
+    const result = await checkInboundAccessControl({
+      accountId: "default",
+      from: "+15550009999",
+      selfE164: "+15550009999",
+      senderE164: "+15550009999",
+      group: false,
+      pushName: "Owner",
+      isFromMe: true,
+      sock: { sendMessage: sendMessageMock },
+      remoteJid: "15550009999@s.whatsapp.net",
+    });
+
+    expect(result.allowed).toBe(true);
+  });
+});
+
 describe("WhatsApp dmPolicy precedence", () => {
   it("uses account-level dmPolicy instead of channel-level (#8736)", async () => {
     // Channel-level says "pairing" but the account-level says "allowlist".
