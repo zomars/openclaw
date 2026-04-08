@@ -50,7 +50,7 @@ const authDir = path.join(process.env.HOME ?? "", ".openclaw/credentials/whatsap
 /** Resolve the gateway token from config (fall back to env var). */
 function resolveGatewayToken(): string | undefined {
   // Try env var first (set externally or already configured)
-  if (process.env.OPENCLAW_GATEWAY_TOKEN) return process.env.OPENCLAW_GATEWAY_TOKEN;
+  if (process.env.OPENCLAW_GATEWAY_TOKEN) {return process.env.OPENCLAW_GATEWAY_TOKEN;}
   // Fall back: read directly from openclaw.json
   try {
     const cfgPath = path.join(process.env.HOME ?? "", ".openclaw", "openclaw.json");

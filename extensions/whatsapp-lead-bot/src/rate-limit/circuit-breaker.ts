@@ -56,10 +56,10 @@ export class CircuitBreaker {
    * If hit-rate exceeds threshold over the window, trip the breaker.
    */
   async recordCheck(wasRateLimited: boolean): Promise<void> {
-    if (!this.config.enabled) return;
+    if (!this.config.enabled) {return;}
 
     const state = await this.db.getCircuitBreaker();
-    if (state.is_tripped) return;
+    if (state.is_tripped) {return;}
 
     const now = Date.now();
     const elapsed = now - state.window_start;
@@ -75,7 +75,7 @@ export class CircuitBreaker {
     const updated = await this.db.recordCircuitCheck(wasRateLimited);
 
     // Only evaluate after minimum checks
-    if (updated.total_checks < this.config.minChecks) return;
+    if (updated.total_checks < this.config.minChecks) {return;}
 
     const hitRate = updated.total_hits / updated.total_checks;
     if (hitRate >= this.config.hitRateThreshold) {

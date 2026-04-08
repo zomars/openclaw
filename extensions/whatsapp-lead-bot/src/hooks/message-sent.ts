@@ -18,7 +18,7 @@ export function createMessageSentHandler(deps: MessageSentHandlerDeps) {
     const { to, success } = event;
     const { channelId, accountId } = ctx;
 
-    if (channelId !== "whatsapp") return;
+    if (channelId !== "whatsapp") {return;}
 
     if (!success) {
       console.log(`[message-sent] Message sending failed for ${to}, skipping queue processing`);
@@ -27,14 +27,14 @@ export function createMessageSentHandler(deps: MessageSentHandlerDeps) {
 
     const { messageQueue } = deps;
 
-    if (!messageQueue.hasQueued(to, accountId)) return;
+    if (!messageQueue.hasQueued(to, accountId)) {return;}
 
     const { runtime } = getContext();
 
     const drainQueue = async () => {
       while (messageQueue.hasQueued(to, accountId)) {
         const nextMsg = messageQueue.pop(to, accountId);
-        if (!nextMsg) break;
+        if (!nextMsg) {break;}
 
         console.log(
           `[message-sent] Sending queued message to ${to}: ${nextMsg.content.substring(0, 50)}...`,

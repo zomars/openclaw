@@ -229,7 +229,7 @@ export class SqliteDatabase implements DatabaseInterface {
 
   async isLeadQualified(leadId: number): Promise<boolean> {
     const lead = await this.getLeadById(leadId);
-    if (!lead) return false;
+    if (!lead) {return false;}
 
     return !!(
       lead.name &&
@@ -583,7 +583,7 @@ export class SqliteDatabase implements DatabaseInterface {
 
   async updateCustomFields(leadId: number, fields: Record<string, unknown>): Promise<void> {
     const lead = await this.getLeadById(leadId);
-    const existing = lead?.custom_fields ? JSON.parse(lead.custom_fields as string) : {};
+    const existing = lead?.custom_fields ? JSON.parse(lead.custom_fields) : {};
     const merged = { ...existing, ...fields };
     this.db
       .prepare("UPDATE leads SET custom_fields = ?, updated_at = ? WHERE id = ?")

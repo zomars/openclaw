@@ -29,7 +29,7 @@ export function createMessageSendingHandler(deps: MessageSendingHandlerDeps) {
     const { channelId, accountId } = ctx;
 
     console.log(
-      `[message-sending] Event: channelId=${channelId}, to=${to}, contentLen=${content?.length}, isOpenclaw=${metadata?.openclawInitiated}`,
+      `[message-sending] Event: channelId=${channelId}, to=${to}, contentLen=${content?.length}, isOpenclaw=${String(metadata?.openclawInitiated)}`,
     );
 
     // Only handle WhatsApp messages

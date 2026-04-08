@@ -55,10 +55,9 @@ export class RateLimiter {
 
   async recordMessage(leadId: number): Promise<void> {
     const lead = await this.db.getLeadById(leadId);
-    if (!lead) return;
+    if (!lead) {return;}
 
     const now = Date.now();
-    const windowStart = lead.rate_limit_window_start || now;
 
     // Initialize window if needed
     if (!lead.rate_limit_window_start) {

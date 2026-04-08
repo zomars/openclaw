@@ -8,6 +8,7 @@
 import os from "node:os";
 import path from "node:path";
 
+import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import { sendWebChannelMessage } from "../../src/plugins/runtime/runtime-web-channel-plugin.js";
 import { AdminCommandHandler } from "./src/admin/commands.js";
 import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
@@ -47,7 +48,7 @@ const plugin = {
     "AI-powered lead qualification bot for WhatsApp with admin commands, rate limiting, and follow-ups",
   configSchema: WhatsAppLeadBotConfigSchema,
 
-  register(api: any) {
+  register(api: OpenClawPluginApi) {
     const config = WhatsAppLeadBotConfigSchema.parse(api.pluginConfig);
 
     if (!config.enabled) {
@@ -73,6 +74,12 @@ const plugin = {
     // Wire dependencies (DI composition root)
     const rateLimiter = new RateLimiter(db, config.rateLimit);
 
+    // WhatsApp-specific runtime extensions (not in public plugin API type)
+    const waRuntime = (api.runtime as Record<string, unknown>)?.channel as
+      | { whatsapp?: Record<string, (...args: unknown[]) => unknown> }
+      | undefined;
+    const waFns = waRuntime?.whatsapp;
+
     // Create runtime adapter factory for sending messages from specific accounts
     const getRuntime = (accountId?: string): Runtime => {
       return {
@@ -93,9 +100,9 @@ const plugin = {
         async addChatLabel(chatJid: string, labelId: string) {
           try {
             if (
-              typeof (api.runtime as any).channel?.whatsapp?.addChatLabelWhatsApp === "function"
+              typeof waFns?.addChatLabelWhatsApp === "function"
             ) {
-              await (api.runtime as any).channel.whatsapp.addChatLabelWhatsApp(chatJid, labelId, {
+              await waFns?.addChatLabelWhatsApp(chatJid, labelId, {
                 accountId,
               });
             }
@@ -106,9 +113,9 @@ const plugin = {
         async removeChatLabel(chatJid: string, labelId: string) {
           try {
             if (
-              typeof (api.runtime as any).channel?.whatsapp?.removeChatLabelWhatsApp === "function"
+              typeof waFns?.removeChatLabelWhatsApp === "function"
             ) {
-              await (api.runtime as any).channel.whatsapp.removeChatLabelWhatsApp(
+              await waFns?.removeChatLabelWhatsApp(
                 chatJid,
                 labelId,
                 { accountId },
@@ -120,8 +127,8 @@ const plugin = {
         },
         async getLabels() {
           try {
-            if (typeof (api.runtime as any).channel?.whatsapp?.getLabelsWhatsApp === "function") {
-              return await (api.runtime as any).channel.whatsapp.getLabelsWhatsApp({ accountId });
+            if (typeof waFns?.getLabelsWhatsApp === "function") {
+              return await waFns?.getLabelsWhatsApp({ accountId });
             }
           } catch (err) {
             console.error("[lead-bot] getLabels failed:", err);
@@ -130,8 +137,8 @@ const plugin = {
         },
         async createLabel(name: string, color: number) {
           try {
-            if (typeof (api.runtime as any).channel?.whatsapp?.createLabelWhatsApp === "function") {
-              return await (api.runtime as any).channel.whatsapp.createLabelWhatsApp(name, color, {
+            if (typeof waFns?.createLabelWhatsApp === "function") {
+              return await waFns?.createLabelWhatsApp(name, color, {
                 accountId,
               });
             }
@@ -145,8 +152,8 @@ const plugin = {
           labels: { id: string; name?: string; color?: number; deleted?: boolean },
         ) {
           try {
-            if (typeof (api.runtime as any).channel?.whatsapp?.addLabelWhatsApp === "function") {
-              await (api.runtime as any).channel.whatsapp.addLabelWhatsApp(chatJid, labels, {
+            if (typeof waFns?.addLabelWhatsApp === "function") {
+              await waFns?.addLabelWhatsApp(chatJid, labels, {
                 accountId,
               });
             }
@@ -157,9 +164,9 @@ const plugin = {
         async addMessageLabel(chatJid: string, messageId: string, labelId: string) {
           try {
             if (
-              typeof (api.runtime as any).channel?.whatsapp?.addMessageLabelWhatsApp === "function"
+              typeof waFns?.addMessageLabelWhatsApp === "function"
             ) {
-              await (api.runtime as any).channel.whatsapp.addMessageLabelWhatsApp(
+              await waFns?.addMessageLabelWhatsApp(
                 chatJid,
                 messageId,
                 labelId,
@@ -173,10 +180,10 @@ const plugin = {
         async removeMessageLabel(chatJid: string, messageId: string, labelId: string) {
           try {
             if (
-              typeof (api.runtime as any).channel?.whatsapp?.removeMessageLabelWhatsApp ===
+              typeof waFns?.removeMessageLabelWhatsApp ===
               "function"
             ) {
-              await (api.runtime as any).channel.whatsapp.removeMessageLabelWhatsApp(
+              await waFns?.removeMessageLabelWhatsApp(
                 chatJid,
                 messageId,
                 labelId,
@@ -189,8 +196,8 @@ const plugin = {
         },
         async onWhatsApp(...phoneNumbers: string[]) {
           try {
-            if (typeof (api.runtime as any).channel?.whatsapp?.onWhatsApp === "function") {
-              return await (api.runtime as any).channel.whatsapp.onWhatsApp(...phoneNumbers, {
+            if (typeof waFns?.onWhatsApp === "function") {
+              return await waFns?.onWhatsApp(...phoneNumbers, {
                 accountId,
               });
             }
@@ -202,10 +209,10 @@ const plugin = {
         async getBusinessProfile(jid: string) {
           try {
             if (
-              typeof (api.runtime as any).channel?.whatsapp?.getBusinessProfileWhatsApp ===
+              typeof waFns?.getBusinessProfileWhatsApp ===
               "function"
             ) {
-              return await (api.runtime as any).channel.whatsapp.getBusinessProfileWhatsApp(jid, {
+              return await waFns?.getBusinessProfileWhatsApp(jid, {
                 accountId,
               });
             }
@@ -214,10 +221,10 @@ const plugin = {
           }
           return undefined;
         },
-        async chatModify(mod: any, jid: string) {
+        async chatModify(mod: unknown, jid: string) {
           try {
-            if (typeof (api.runtime as any).channel?.whatsapp?.chatModifyWhatsApp === "function") {
-              await (api.runtime as any).channel.whatsapp.chatModifyWhatsApp(mod, jid, {
+            if (typeof waFns?.chatModifyWhatsApp === "function") {
+              await waFns?.chatModifyWhatsApp(mod, jid, {
                 accountId,
               });
             }
@@ -391,14 +398,14 @@ const plugin = {
     console.log("[whatsapp-lead-bot] Plugin registered successfully");
 
     // Store ALL WhatsApp messages (inbound + outbound + bot replies) via raw Baileys events
-    const onRawMsg = (api.runtime as any)?.channel?.whatsapp?.onRawWhatsAppMessage;
+    const onRawMsg = waFns?.onRawWhatsAppMessage;
     if (typeof onRawMsg === "function") {
       const unsub = onRawMsg((acctId: string, rawMsg: unknown) => {
         if (config.whatsappAccounts.length > 0 && !config.whatsappAccounts.includes(acctId)) {
           return;
         }
         const stored = parseRawMessage(rawMsg as Parameters<typeof parseRawMessage>[0]);
-        if (!stored) return;
+        if (!stored) {return;}
         db.storeMessage(stored).catch((err) => {
           console.error("[lead-bot] Failed to store message:", err);
         });

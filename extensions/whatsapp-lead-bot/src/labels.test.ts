@@ -148,8 +148,8 @@ describe("WhatsAppLabelService", () => {
 
       // Both should succeed with the same ID
       expect(runtime.addedLabels).toHaveLength(2);
-      expect(runtime.addedLabels[0]!.id).toBe("42");
-      expect(runtime.addedLabels[1]!.id).toBe("42");
+      expect(runtime.addedLabels[0].id).toBe("42");
+      expect(runtime.addedLabels[1].id).toBe("42");
     });
   });
 
@@ -265,7 +265,7 @@ describe("WhatsAppLabelService", () => {
       // All labels should be persisted in DB
       const allLabels = await db.getAllLabels();
       expect(allLabels).toHaveLength(6);
-      const names = allLabels.map((l) => l.name).sort();
+      const names = allLabels.map((l) => l.name).toSorted();
       expect(names).toEqual(["BOT", "COLD", "HOT", "HUMANO", "OUT", "WARM"]);
     });
   });

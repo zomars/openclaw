@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { SqliteDatabase } from "../../database/connection.js";
 import { CircuitBreaker, type CircuitBreakerNotifier } from "../circuit-breaker.js";
 import { RateLimitCoordinator } from "../coordinator.js";

@@ -53,7 +53,7 @@ describe("System / Operations Stories", () => {
     const rl3 = new RateLimiter(db3, { enabled: true, messagesPerHour: 100, windowMs: 3600000 });
     const coord3 = new RateLimitCoordinator(cb3, gl3, rl3);
     // Trip the breaker manually
-    for (let i = 0; i < 5; i++) await cb3.recordCheck(true);
+    for (let i = 0; i < 5; i++) {await cb3.recordCheck(true);}
     const leadB = await db3.getOrCreateLead("+5216671000012");
     const rCb = await coord3.checkAndRecord(leadB.id);
     expect(rCb.allowed).toBe(false);
@@ -322,7 +322,7 @@ describe("System / Operations Stories", () => {
     const fakeRuntime = createFakeRuntime();
     const getRuntime = () => fakeRuntime;
 
-    const createHandler = (_deps: {}) => async (_event: any, ctx: { accountId?: string }) => {
+    const createHandler = (_deps: {}) => async (_event: unknown, _ctx: { accountId?: string }) => {
       const reqCtx = getContext();
       return { accountId: reqCtx.accountId, hasRuntime: !!reqCtx.runtime };
     };

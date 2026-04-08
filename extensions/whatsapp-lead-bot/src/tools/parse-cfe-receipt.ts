@@ -5,19 +5,9 @@
  * Includes quick validation for PDFs before calling API
  */
 
-import { z } from "zod";
 import type { ExtractionStore, LeadRepository } from "../database.js";
 import { parseCFEBill } from "../media/cfe-api-client.js";
 import { quickValidateCFE } from "../media/pdf-validator.js";
-
-const ParseCFEReceiptInputSchema = z.object({
-  leadId: z.number().describe("Lead ID from database"),
-  filePath: z
-    .union([z.string(), z.array(z.string()).max(3)])
-    .describe(
-      "Path(s) to CFE receipt file(s). Can be a single PDF or 1-3 images (JPG/PNG/WebP). If multiple pages, send as array.",
-    ),
-});
 
 const inputJsonSchema = {
   type: "object" as const,

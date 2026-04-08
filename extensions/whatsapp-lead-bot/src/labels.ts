@@ -56,7 +56,7 @@ export class WhatsAppLabelService implements LabelService {
   private async resolveId(name: string, runtime: Runtime): Promise<string | null> {
     // 1. In-memory cache
     const cached = this.idCache.get(name);
-    if (cached) return cached;
+    if (cached) {return cached;}
 
     // 2. DB lookup
     const dbId = await this.labelStore.getLabelId(name);
@@ -104,17 +104,17 @@ export class WhatsAppLabelService implements LabelService {
 
   /** Delay between WhatsApp API calls to avoid rate limits (429) */
   private delay(): Promise<void> {
-    if (this.delayMs <= 0) return Promise.resolve();
+    if (this.delayMs <= 0) {return Promise.resolve();}
     return new Promise((r) => setTimeout(r, this.delayMs));
   }
 
   /** Apply score label and remove other score labels */
   async applyScore(phone: string, score: string, runtime: Runtime): Promise<void> {
     const labelName = this.scoreNames[score];
-    if (!labelName) return;
+    if (!labelName) {return;}
 
     const labelId = await this.resolveId(labelName, runtime);
-    if (!labelId) return;
+    if (!labelId) {return;}
 
     const phoneJid = `${normalizePhone(phone)}@s.whatsapp.net`;
     await runtime.addChatLabel?.(phoneJid, labelId);
@@ -122,7 +122,7 @@ export class WhatsAppLabelService implements LabelService {
 
     // Remove other score labels
     for (const otherName of this.allScoreNames) {
-      if (otherName === labelName) continue;
+      if (otherName === labelName) {continue;}
       const otherId = await this.resolveId(otherName, runtime);
       if (otherId && otherId !== labelId) {
         try {

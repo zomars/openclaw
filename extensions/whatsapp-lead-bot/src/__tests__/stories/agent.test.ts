@@ -208,7 +208,7 @@ describe("Agent / Admin Stories", () => {
 
   it("16. /block and /unblock control which leads the bot engages", async () => {
     const { handler, db } = createAdminHandler();
-    const lead = await db.getOrCreateLead("+5216671000020");
+    await db.getOrCreateLead("+5216671000020");
 
     // Block
     const blockResult = await handler.execute({ type: "block", phone: "526671000020", reason: "spam" });
@@ -229,7 +229,7 @@ describe("Agent / Admin Stories", () => {
   });
 
   it("17. /handoff manually takes over a conversation from the bot", async () => {
-    const { handler, db, notifier } = createAdminHandler();
+    const { handler, db } = createAdminHandler();
     const lead = await db.getOrCreateLead("+5216671000030");
     await db.updateLeadStatus(lead.id, "qualifying");
 
@@ -275,7 +275,7 @@ describe("Agent / Admin Stories", () => {
 
   it("20. /score manually overrides a lead score", async () => {
     const { handler, db } = createAdminHandler();
-    const lead = await db.getOrCreateLead("+5216671000045");
+    await db.getOrCreateLead("+5216671000045");
 
     const result = await handler.execute({ type: "score", phone: "526671000045", score: "WARM" });
     expect(result).toContain("Score set");

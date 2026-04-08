@@ -34,7 +34,7 @@ const SINALOA_CITIES = new Set([
 
 function isInSinaloa(location: string): boolean {
   const normalized = location.toLowerCase().trim();
-  if (normalized.includes("sinaloa")) return true;
+  if (normalized.includes("sinaloa")) {return true;}
   return SINALOA_CITIES.has(normalized);
 }
 
@@ -56,14 +56,14 @@ export function computeScore(input: ScoreInput): LeadScore | null {
   }
 
   // Outside service area
-  if (!isInSinaloa(input.location)) return "OUT";
+  if (!isInSinaloa(input.location)) {return "OUT";}
 
   // Renters can't install panels
-  if (input.ownership?.toLowerCase() === "rentada") return "OUT";
+  if (input.ownership?.toLowerCase() === "rentada") {return "OUT";}
 
   // Score by bill amount
-  if (input.bimonthly_bill < 500) return "OUT";
-  if (input.bimonthly_bill < 1000) return "COLD";
-  if (input.bimonthly_bill < 2000) return "WARM";
+  if (input.bimonthly_bill < 500) {return "OUT";}
+  if (input.bimonthly_bill < 1000) {return "COLD";}
+  if (input.bimonthly_bill < 2000) {return "WARM";}
   return "HOT";
 }

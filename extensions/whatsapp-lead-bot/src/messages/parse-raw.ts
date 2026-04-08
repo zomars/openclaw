@@ -11,7 +11,7 @@ export function parseRawMessage(rawMsg: {
 }): StoredMessage | null {
   const msgId = rawMsg?.key?.id;
   const remoteJid = rawMsg?.key?.remoteJid;
-  if (!msgId || !remoteJid) return null;
+  if (!msgId || !remoteJid) {return null;}
 
   const fromMe = rawMsg.key!.fromMe ? 1 : 0;
   const participant = rawMsg.key!.participant ?? null;
@@ -19,7 +19,7 @@ export function parseRawMessage(rawMsg: {
     ? Number(rawMsg.messageTimestamp)
     : Math.floor(Date.now() / 1000);
 
-  const msg = rawMsg.message as Record<string, unknown> | undefined;
+  const msg = rawMsg.message;
   const content = extractTextContent(msg);
   const messageType = msg
     ? (Object.keys(msg).find((k) => k !== "messageContextInfo") ?? "unknown")
@@ -38,7 +38,7 @@ export function parseRawMessage(rawMsg: {
 }
 
 function extractTextContent(msg: Record<string, unknown> | undefined): string | null {
-  if (!msg) return null;
+  if (!msg) {return null;}
   const ext = msg.extendedTextMessage as Record<string, unknown> | undefined;
   const img = msg.imageMessage as Record<string, unknown> | undefined;
   const vid = msg.videoMessage as Record<string, unknown> | undefined;

@@ -24,7 +24,7 @@ export class HandoffInterceptor {
 
   async handle(input: HandoffInput): Promise<PluginHookMessageReceivedResult | null> {
     const { lead, event } = input;
-    if (lead.status !== "handed_off") return null;
+    if (lead.status !== "handed_off") {return null;}
 
     const { mediaType, mediaPath } = this.extractMedia(event);
 
@@ -53,7 +53,7 @@ export class HandoffInterceptor {
       }
     }
 
-    if (mediaType === "text/plain") mediaType = undefined;
+    if (mediaType === "text/plain") {mediaType = undefined;}
     return { mediaType, mediaPath };
   }
 

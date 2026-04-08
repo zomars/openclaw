@@ -56,7 +56,7 @@ export class AgentNotifier {
     type: "receipt" | "media",
     detail?: string,
   ): Promise<void> {
-    if (this.config.agentNumbers.length === 0) return;
+    if (this.config.agentNumbers.length === 0) {return;}
 
     const name = lead.name || lead.phone_number;
     const msg =
@@ -67,14 +67,14 @@ export class AgentNotifier {
   }
 
   async notifyCircuitTripped(reason: string): Promise<void> {
-    if (this.config.agentNumbers.length === 0) return;
+    if (this.config.agentNumbers.length === 0) {return;}
 
     const message = `🚨 **CIRCUIT BREAKER TRIPPED**\n\nReason: ${reason}\n\nAll bot responses are SUSPENDED. Use /reset-breaker to restore service.`;
     await this.sendToAgents(message);
   }
 
   async notifyCircuitReset(): Promise<void> {
-    if (this.config.agentNumbers.length === 0) return;
+    if (this.config.agentNumbers.length === 0) {return;}
 
     const message = `✅ **Circuit Breaker Reset**\n\nBot responses have been restored.`;
     await this.sendToAgents(message);
@@ -90,7 +90,7 @@ export class AgentNotifier {
     return `✅ **Lead Qualified**\n\nPhone: ${lead.phone_number}\nName: ${lead.name || "N/A"}\nScore: ${lead.score || "N/A"}\n\nLocation: ${lead.location || "N/A"}\nProperty: ${lead.property_type || "N/A"}\nOwnership: ${lead.ownership || "N/A"}\nBill: ${lead.bimonthly_bill ?? "N/A"}`;
   }
 
-  private formatHandoffNotification(lead: Lead, reason?: string, agentPhone?: string): string {
+  private formatHandoffNotification(lead: Lead, reason?: string, _agentPhone?: string): string {
     const reasonLine = reason ? `\nReason: ${reason}` : "";
     return `🤝 Handoff: ${lead.phone_number}${reasonLine}\nUn vendedor respondió a este lead. El bot dejó de responder.\nPara regresar al bot: /takeback ${lead.phone_number}`;
   }

@@ -23,7 +23,7 @@ export class HandoffManager {
   /** Trigger handoff from a human message sent via WhatsApp Web. */
   async triggerWhatsAppWebHandoff(leadId: number, leadPhone: string): Promise<void> {
     const lead = await this.db.getLeadById(leadId);
-    if (!lead || lead.status === "handed_off") return;
+    if (!lead || lead.status === "handed_off") {return;}
 
     await this.db.updateLeadStatus(leadId, "handed_off");
     await this.db.logHandoffEvent(leadId, "human_detected_whatsapp_web", leadPhone);
@@ -36,7 +36,7 @@ export class HandoffManager {
   /** Trigger handoff when a human agent sends a message to a lead. */
   async triggerHumanMessageHandoff(leadId: number): Promise<void> {
     const lead = await this.db.getLeadById(leadId);
-    if (!lead || lead.status === "handed_off") return;
+    if (!lead || lead.status === "handed_off") {return;}
 
     await this.db.updateLeadStatus(leadId, "handed_off");
     await this.db.logHandoffEvent(leadId, "human_detected", "agent");

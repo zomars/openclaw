@@ -243,7 +243,7 @@ describe("Lead / Customer Stories", () => {
     await db.updateCustomFields(lead.id, { ctwa_clid: "ad-click-123", ctwa_clid_captured_at: Date.now() });
 
     const updated = await db.getLeadByPhone("526671000080");
-    const fields = JSON.parse(updated!.custom_fields as string);
+    const fields = JSON.parse(updated!.custom_fields);
     expect(fields.ctwa_clid).toBe("ad-click-123");
     expect(fields.ctwa_clid_captured_at).toBeDefined();
   });

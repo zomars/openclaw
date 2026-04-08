@@ -16,7 +16,7 @@ const store = new AsyncLocalStorage<RequestContext>();
 
 export function getContext(): RequestContext {
   const ctx = store.getStore();
-  if (!ctx) throw new Error("No request context — withContext wrapper missing?");
+  if (!ctx) {throw new Error("No request context — withContext wrapper missing?");}
   return ctx;
 }
 

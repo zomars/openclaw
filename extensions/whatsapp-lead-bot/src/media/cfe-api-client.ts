@@ -5,7 +5,6 @@
  */
 
 import * as fs from "node:fs";
-import * as path from "node:path";
 
 // API response structure (new format)
 interface CFEAPIResponse {
@@ -84,20 +83,15 @@ export async function parseCFEBill(
     // Detect file type
     const buffer = fs.readFileSync(filePath);
     let fileType: "pdf" | "image";
-    let contentType: string;
 
     if (buffer.toString("utf-8", 0, 4).startsWith("%PDF")) {
       fileType = "pdf";
-      contentType = "application/pdf";
     } else if (buffer[0] === 0xff && buffer[1] === 0xd8) {
       fileType = "image";
-      contentType = "image/jpeg";
     } else if (buffer.toString("utf-8", 0, 4).startsWith("\x89PNG")) {
       fileType = "image";
-      contentType = "image/png";
     } else if (buffer.toString("utf-8", 8, 12) === "WEBP") {
       fileType = "image";
-      contentType = "image/webp";
     } else {
       throw new Error(`Unsupported file type: ${filePath}`);
     }
@@ -220,7 +214,7 @@ export function findRecentPDFs(mediaDir: string, maxAgeSeconds: number = 10): st
     const recentPDFs: string[] = [];
 
     for (const file of files) {
-      if (!file.endsWith(".pdf")) continue;
+      if (!file.endsWith(".pdf")) {continue;}
 
       const fullPath = `${mediaDir}/${file}`;
       const stats = fs.statSync(fullPath);

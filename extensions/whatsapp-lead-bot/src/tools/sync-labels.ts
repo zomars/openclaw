@@ -102,8 +102,8 @@ export const syncLabelsTool = {
           status,
           scoreChanged,
         });
-      } catch (err: any) {
-        results.errors.push({ phone, error: err.message ?? String(err) });
+      } catch (err: unknown) {
+        results.errors.push({ phone, error: err instanceof Error ? err.message : String(err) });
       }
     }
 

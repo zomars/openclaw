@@ -24,6 +24,6 @@ export interface Runtime {
   addMessageLabel?(chatJid: string, messageId: string, labelId: string): Promise<void>;
   removeMessageLabel?(chatJid: string, messageId: string, labelId: string): Promise<void>;
   onWhatsApp?(...phoneNumbers: string[]): Promise<{ jid: string; exists: boolean }[] | undefined>;
-  getBusinessProfile?(jid: string): Promise<any>;
-  chatModify?(mod: any, jid: string): Promise<void>;
+  getBusinessProfile?(jid: string): Promise<unknown>;
+  chatModify?(mod: unknown, jid: string): Promise<void>;
 }
