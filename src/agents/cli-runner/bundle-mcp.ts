@@ -21,6 +21,14 @@ type PreparedCliBundleMcpConfig = {
   backend: CliBackendConfig;
   cleanup?: () => Promise<void>;
   mcpConfigHash?: string;
+  /**
+   * SHA-256 of the raw merged MCP config without port canonicalization.
+   * Used to accept CLI session bindings persisted before the canonicalization
+   * fix landed — those bindings stored a hash that embedded the literal
+   * loopback port. On the first post-upgrade turn the binding is rewritten
+   * with the canonical hash, so this compatibility path decays naturally.
+   */
+  legacyMcpConfigHash?: string;
   env?: Record<string, string>;
 };
 
@@ -344,6 +352,11 @@ async function prepareModeSpecificBundleMcpConfig(params: {
   const serializedConfig = `${JSON.stringify(params.mergedConfig, null, 2)}\n`;
   const serializedHashSource = `${JSON.stringify(params.hashSource ?? params.mergedConfig, null, 2)}\n`;
   const mcpConfigHash = crypto.createHash("sha256").update(serializedHashSource).digest("hex");
+  // Legacy hash over the raw (non-canonicalized) merged config. Matches what
+  // pre-fix gateway builds persisted in CLI session bindings, so bindings
+  // written by the old code are still accepted on the first post-upgrade
+  // turn and get rewritten with the canonical hash afterwards.
+  const legacyMcpConfigHash = crypto.createHash("sha256").update(serializedConfig).digest("hex");
 
   if (params.mode === "codex-config-overrides") {
     return {
@@ -356,6 +369,7 @@ async function prepareModeSpecificBundleMcpConfig(params: {
         ),
       },
       mcpConfigHash,
+      legacyMcpConfigHash,
       env: params.env,
     };
   }
@@ -365,6 +379,7 @@ async function prepareModeSpecificBundleMcpConfig(params: {
     return {
       backend: params.backend,
       mcpConfigHash,
+      legacyMcpConfigHash,
       env: settings.env,
       cleanup: settings.cleanup,
     };
@@ -383,6 +398,7 @@ async function prepareModeSpecificBundleMcpConfig(params: {
       ),
     },
     mcpConfigHash,
+    legacyMcpConfigHash,
     env: params.env,
     cleanup: async () => {
       await fs.rm(tempDir, { recursive: true, force: true });
