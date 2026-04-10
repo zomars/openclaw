@@ -3,31 +3,50 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * Telegram topic file format emitted by the Pi runtime. We depend on the
- * filename convention `<sessionUUID>-topic-<topicId>.jsonl` to group
- * historical session files by topic without having to open any of them.
+ * Extracts a messaging `topic_id` from an arbitrary string. Claude CLI's own
+ * session files (`~/.claude/projects/<project>/<uuid>.jsonl`) store the
+ * inbound message context as a JSON blob embedded inside a message
+ * `content` string. The context object carries `topic_id` (or equivalent
+ * messaging-thread identifier). We scan up to a small head of each file
+ * for this pattern — the first enqueue message usually contains it — so the
+ * canary is O(bytes-read-per-file) rather than O(full-file).
+ *
+ * The regex matches both unescaped (`"topic_id": "123"`) and JSON-string
+ * embedded (`\"topic_id\": \"123\"`) forms because the `content` field is
+ * a JSON-encoded string-inside-a-string.
  */
-const TOPIC_FILE_REGEX = /^([0-9a-f-]{36})-topic-(\d+)\.jsonl$/;
+const TOPIC_ID_REGEX = /\\?"topic_id\\?"\s*:\s*\\?"?(\d+)\\?"?/g;
 
 /**
- * Minimum size ratio below which the currently-bound session file is
- * considered suspiciously small relative to the best recoverable session
- * file for the same topic. At 10x, a binding pointing at a ~10 KB fresh
- * session when a 100 KB+ session exists for the same topic will trigger
- * a warning — strong signal that the amnesia class of bug fired.
+ * Number of bytes to read from the head of each Claude CLI session file
+ * when extracting topic IDs. The first `queue-operation` message carrying
+ * the topic metadata is typically within the first few KB, so 500 KB is
+ * a comfortable upper bound that still keeps the scan fast.
+ */
+const HEAD_READ_BYTES = 500_000;
+
+/**
+ * Minimum size ratio below which the currently-bound Claude CLI session
+ * file is considered suspiciously small relative to the best recoverable
+ * session file for the same topic. At 10x, a binding pointing at a
+ * ~10 KB fresh session when a ~100 KB+ session exists for the same topic
+ * will trigger a warning.
  */
 const SUSPICIOUS_RATIO = 10;
 
-/**
- * Agents directory under `~/.openclaw`. Can be overridden for tests or
- * when running against a non-standard home. Only used to locate session
- * stores; never written to.
- */
 export function resolveAgentsDir(home?: string): string {
   return path.join(home ?? os.homedir(), ".openclaw", "agents");
 }
 
-type SessionEntryStub = Record<string, unknown>;
+export function resolveClaudeProjectsDir(home?: string): string {
+  return path.join(home ?? os.homedir(), ".claude", "projects");
+}
+
+type TopicSessionCandidate = {
+  sessionId: string;
+  filePath: string;
+  size: number;
+};
 
 type HealthFinding = {
   agent: string;
@@ -35,21 +54,24 @@ type HealthFinding = {
   topicId: number;
   currentSessionId?: string;
   currentSizeBytes: number;
+  currentFileExists: boolean;
   bestSessionId: string;
   bestSizeBytes: number;
-  bestPath: string;
+  bestFilePath: string;
   recoverableSiblings: number;
 };
 
 type HealthCheckResult = {
   agentsScanned: number;
   bindingsScanned: number;
+  claudeSessionFilesScanned: number;
+  topicsWithHistory: number;
   findings: HealthFinding[];
 };
 
 function extractTopicIdFromKey(key: string): number | undefined {
-  // Session keys end in `:<numericId>` for Telegram topic/thread entries.
-  // Both old (`:thread:123`) and new (`:thread:<userId>:123`) shapes apply.
+  // Session keys end in `:<numericId>` for messaging topic/thread entries
+  // (both old `:thread:123` and new `:thread:<userId>:123` shapes apply).
   const lastColon = key.lastIndexOf(":");
   if (lastColon === -1) {
     return undefined;
@@ -61,136 +83,252 @@ function extractTopicIdFromKey(key: string): number | undefined {
   return Number.parseInt(tail, 10);
 }
 
-async function scanAgentSessionDir(params: {
-  agentName: string;
-  sessionsDir: string;
-}): Promise<HealthFinding[]> {
-  const { agentName, sessionsDir } = params;
-  let entries: string[];
+async function readHeadChunk(filePath: string, bytes: number): Promise<string | undefined> {
+  let handle: fs.FileHandle | undefined;
   try {
-    entries = await fs.readdir(sessionsDir);
+    handle = await fs.open(filePath, "r");
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.slice(0, bytesRead).toString("utf-8");
   } catch {
-    return [];
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => {});
   }
+}
 
-  // Map topicId → sorted list of (sessionId, path, size), biggest first.
-  const topicFiles = new Map<number, { sessionId: string; filePath: string; size: number }[]>();
-  for (const entry of entries) {
-    const match = TOPIC_FILE_REGEX.exec(entry);
-    const sessionId = match?.[1];
-    const topicIdRaw = match?.[2];
-    if (!sessionId || !topicIdRaw) {
+function extractTopicIdsFromContent(content: string): Set<number> {
+  const ids = new Set<number>();
+  for (const match of content.matchAll(TOPIC_ID_REGEX)) {
+    const raw = match[1];
+    if (!raw) {
       continue;
     }
-    const topicId = Number.parseInt(topicIdRaw, 10);
-    const filePath = path.join(sessionsDir, entry);
-    let size = 0;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed)) {
+      ids.add(parsed);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Walks every Claude CLI project directory and groups every session file
+ * by the `topic_id` found in its content. Returns a map from topic id to
+ * every candidate session, sorted by size descending (biggest = most
+ * conversation content). Skips directories we can't read without raising.
+ */
+async function buildClaudeSessionTopicIndex(params: {
+  claudeProjectsDir: string;
+}): Promise<{ index: Map<number, TopicSessionCandidate[]>; filesScanned: number }> {
+  const index = new Map<number, TopicSessionCandidate[]>();
+  let filesScanned = 0;
+
+  let projectDirs: string[];
+  try {
+    projectDirs = await fs.readdir(params.claudeProjectsDir);
+  } catch {
+    return { index, filesScanned };
+  }
+
+  for (const projectDirName of projectDirs) {
+    const projectDir = path.join(params.claudeProjectsDir, projectDirName);
+    let entries: string[];
     try {
-      size = (await fs.stat(filePath)).size;
+      entries = await fs.readdir(projectDir);
     } catch {
       continue;
     }
-    const bucket = topicFiles.get(topicId) ?? [];
-    bucket.push({ sessionId, filePath, size });
-    topicFiles.set(topicId, bucket);
-  }
-  for (const bucket of topicFiles.values()) {
-    bucket.sort((a, b) => b.size - a.size);
+    for (const entry of entries) {
+      if (!entry.endsWith(".jsonl")) {
+        continue;
+      }
+      const filePath = path.join(projectDir, entry);
+      let size = 0;
+      try {
+        size = (await fs.stat(filePath)).size;
+      } catch {
+        continue;
+      }
+      const head = await readHeadChunk(filePath, HEAD_READ_BYTES);
+      if (head === undefined) {
+        continue;
+      }
+      filesScanned += 1;
+      const topicIds = extractTopicIdsFromContent(head);
+      if (topicIds.size === 0) {
+        continue;
+      }
+      const sessionId = entry.slice(0, -".jsonl".length);
+      const candidate: TopicSessionCandidate = { sessionId, filePath, size };
+      for (const topicId of topicIds) {
+        const bucket = index.get(topicId) ?? [];
+        bucket.push(candidate);
+        index.set(topicId, bucket);
+      }
+    }
   }
 
-  const storePath = path.join(sessionsDir, "sessions.json");
-  let store: SessionEntryStub;
+  for (const bucket of index.values()) {
+    bucket.sort((a, b) => b.size - a.size);
+  }
+  return { index, filesScanned };
+}
+
+type AgentStore = Record<string, unknown>;
+
+type CliBindingShape = {
+  sessionId?: unknown;
+};
+
+function getClaudeBinding(entry: unknown): CliBindingShape | undefined {
+  if (typeof entry !== "object" || entry === null) {
+    return undefined;
+  }
+  const bindings = (entry as { cliSessionBindings?: unknown }).cliSessionBindings;
+  if (typeof bindings !== "object" || bindings === null) {
+    return undefined;
+  }
+  const claude = (bindings as Record<string, unknown>)["claude-cli"];
+  if (typeof claude !== "object" || claude === null) {
+    return undefined;
+  }
+  return claude as CliBindingShape;
+}
+
+async function scanAgentStore(params: {
+  agentName: string;
+  storePath: string;
+  topicIndex: Map<number, TopicSessionCandidate[]>;
+}): Promise<{ findings: HealthFinding[]; bindingsScanned: number }> {
+  let store: AgentStore;
   try {
-    store = JSON.parse(await fs.readFile(storePath, "utf-8")) as SessionEntryStub;
+    store = JSON.parse(await fs.readFile(params.storePath, "utf-8")) as AgentStore;
   } catch {
-    return [];
+    return { findings: [], bindingsScanned: 0 };
   }
 
   const findings: HealthFinding[] = [];
+  let bindingsScanned = 0;
   for (const [sessionKey, rawEntry] of Object.entries(store)) {
-    if (typeof rawEntry !== "object" || rawEntry === null) {
-      continue;
-    }
     const topicId = extractTopicIdFromKey(sessionKey);
     if (topicId === undefined) {
       continue;
     }
-    const candidates = topicFiles.get(topicId);
-    const best = candidates?.[0];
-    if (!candidates || !best) {
+    const claudeBinding = getClaudeBinding(rawEntry);
+    if (!claudeBinding) {
+      continue;
+    }
+    bindingsScanned += 1;
+
+    const candidates = params.topicIndex.get(topicId);
+    if (!candidates || candidates.length === 0) {
+      continue;
+    }
+    const best = candidates[0];
+    if (!best) {
       continue;
     }
 
-    const entry = rawEntry as { sessionFile?: unknown; sessionId?: unknown };
-    const currentFile = typeof entry.sessionFile === "string" ? entry.sessionFile : undefined;
-    let currentSize = 0;
-    if (currentFile) {
-      try {
-        currentSize = (await fs.stat(currentFile)).size;
-      } catch {
-        currentSize = 0;
-      }
-    }
-    const currentSessionId = typeof entry.sessionId === "string" ? entry.sessionId : undefined;
+    const currentSessionId =
+      typeof claudeBinding.sessionId === "string" && claudeBinding.sessionId.length > 0
+        ? claudeBinding.sessionId
+        : undefined;
 
-    // Skip when the current binding is already pointing at the best file.
-    if (best.sessionId === currentSessionId && best.size === currentSize) {
+    const currentCandidate = currentSessionId
+      ? candidates.find((c) => c.sessionId === currentSessionId)
+      : undefined;
+    const currentSizeBytes = currentCandidate?.size ?? 0;
+    const currentFileExists = Boolean(currentCandidate);
+
+    if (currentCandidate && currentCandidate.sessionId === best.sessionId) {
       continue;
     }
-    // Skip when the ratio is within tolerance.
-    if (currentSize > 0 && best.size < currentSize * SUSPICIOUS_RATIO) {
+    // If the current binding points at a file we can see, require a big
+    // size delta before flagging — otherwise active-but-small topics (a
+    // brand-new 3-message thread) would generate noise.
+    if (currentFileExists && best.size < currentSizeBytes * SUSPICIOUS_RATIO) {
       continue;
     }
 
     findings.push({
-      agent: agentName,
+      agent: params.agentName,
       sessionKey,
       topicId,
       currentSessionId,
-      currentSizeBytes: currentSize,
+      currentSizeBytes,
+      currentFileExists,
       bestSessionId: best.sessionId,
       bestSizeBytes: best.size,
-      bestPath: best.filePath,
+      bestFilePath: best.filePath,
       recoverableSiblings: candidates.length - 1,
     });
   }
-  return findings;
+  return { findings, bindingsScanned };
 }
 
 /**
- * Walks every agent's session store and reports any binding whose current
- * `sessionFile` is dramatically smaller than the largest recoverable file
- * for the same topic. This is the canary for the "silent session wipe"
- * failure mode that the identity-gate subsystem used to cause: a binding
- * pointing at a ~600-byte fresh session while a ~500 KB session for the
- * same topic sits unused on disk.
+ * Walks every agent's session store and reports any binding whose
+ * currently-bound **Claude CLI** session file (tracked under
+ * `cliSessionBindings["claude-cli"].sessionId` and physically stored at
+ * `~/.claude/projects/<project>/<uuid>.jsonl`) is dramatically smaller
+ * than the largest recoverable session file for the same messaging topic.
  *
- * Read-only: never writes the store, never moves files. Callers should
- * invoke this at gateway boot (and optionally on a timer) and log the
- * findings so a human can decide whether to run the recovery tool.
+ * This is the canary for the "silent Claude CLI session swap" failure
+ * mode where a stored sessionId gets replaced — by a hash-gate
+ * invalidation, a crash mid-turn, or any other path — and the previous
+ * conversation is orphaned in `~/.claude/projects/`. Bindings that are
+ * active and healthy (current size reasonably close to the best
+ * recoverable size) do not fire the canary.
+ *
+ * Read-only: never writes any session store, never modifies any session
+ * file. Callers should invoke this at gateway boot and log findings so a
+ * human can decide whether to run the recovery flow.
  */
 export async function runCliSessionHealthCheck(params?: {
   agentsDir?: string;
+  claudeProjectsDir?: string;
 }): Promise<HealthCheckResult> {
   const agentsDir = params?.agentsDir ?? resolveAgentsDir();
+  const claudeProjectsDir = params?.claudeProjectsDir ?? resolveClaudeProjectsDir();
+
+  const { index: topicIndex, filesScanned } = await buildClaudeSessionTopicIndex({
+    claudeProjectsDir,
+  });
+
   let agentNames: string[];
   try {
     agentNames = await fs.readdir(agentsDir);
   } catch {
-    return { agentsScanned: 0, bindingsScanned: 0, findings: [] };
+    return {
+      agentsScanned: 0,
+      bindingsScanned: 0,
+      claudeSessionFilesScanned: filesScanned,
+      topicsWithHistory: topicIndex.size,
+      findings: [],
+    };
   }
 
   const findings: HealthFinding[] = [];
   let agentsScanned = 0;
   let bindingsScanned = 0;
   for (const agentName of agentNames) {
-    const sessionsDir = path.join(agentsDir, agentName, "sessions");
-    const agentFindings = await scanAgentSessionDir({ agentName, sessionsDir });
-    agentsScanned += 1;
-    bindingsScanned += agentFindings.length;
-    findings.push(...agentFindings);
+    const storePath = path.join(agentsDir, agentName, "sessions", "sessions.json");
+    const result = await scanAgentStore({ agentName, storePath, topicIndex });
+    if (result.bindingsScanned > 0) {
+      agentsScanned += 1;
+    }
+    bindingsScanned += result.bindingsScanned;
+    findings.push(...result.findings);
   }
-  return { agentsScanned, bindingsScanned, findings };
+
+  return {
+    agentsScanned,
+    bindingsScanned,
+    claudeSessionFilesScanned: filesScanned,
+    topicsWithHistory: topicIndex.size,
+    findings,
+  };
 }
 
 export function formatHealthCheckWarning(result: HealthCheckResult): string | undefined {
@@ -198,14 +336,15 @@ export function formatHealthCheckWarning(result: HealthCheckResult): string | un
     return undefined;
   }
   const lines: string[] = [
-    `cli session health: ${result.findings.length} binding(s) may have lost history` +
-      ` (current sessionFile is <1/${SUSPICIOUS_RATIO} the size of the best recoverable session).`,
+    `cli session health: ${result.findings.length} binding(s) may have lost Claude CLI history` +
+      ` (current resume target is <1/${SUSPICIOUS_RATIO} the size of the best recoverable session for the same topic).`,
   ];
   for (const finding of result.findings.slice(0, 10)) {
     const currentId = finding.currentSessionId?.slice(0, 8) ?? "(none)";
+    const missingTag = finding.currentFileExists ? "" : " (missing)";
     lines.push(
       `  [${finding.agent}] topic=${finding.topicId}` +
-        ` current=${currentId}/${finding.currentSizeBytes}B` +
+        ` current=${currentId}/${finding.currentSizeBytes}B${missingTag}` +
         ` best=${finding.bestSessionId.slice(0, 8)}/${finding.bestSizeBytes}B`,
     );
   }
@@ -214,3 +353,10 @@ export function formatHealthCheckWarning(result: HealthCheckResult): string | un
   }
   return lines.join("\n");
 }
+
+// Exported only for tests that want to verify the topic-id extractor
+// directly without standing up a full Claude project dir.
+export const __testing__ = {
+  extractTopicIdsFromContent,
+  extractTopicIdFromKey,
+};
