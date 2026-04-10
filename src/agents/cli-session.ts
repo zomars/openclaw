@@ -28,6 +28,10 @@ export function getCliSessionBinding(
       sessionId: bindingSessionId,
       authProfileId: normalizeOptionalString(fromBindings?.authProfileId),
       authEpoch: normalizeOptionalString(fromBindings?.authEpoch),
+      authEpochVersion:
+        typeof fromBindings?.authEpochVersion === "number"
+          ? fromBindings.authEpochVersion
+          : undefined,
       extraSystemPromptHash: normalizeOptionalString(fromBindings?.extraSystemPromptHash),
       mcpConfigHash: normalizeOptionalString(fromBindings?.mcpConfigHash),
     };
@@ -76,6 +80,9 @@ export function setCliSessionBinding(
         : {}),
       ...(normalizeOptionalString(binding.authEpoch)
         ? { authEpoch: normalizeOptionalString(binding.authEpoch) }
+        : {}),
+      ...(typeof binding.authEpochVersion === "number"
+        ? { authEpochVersion: binding.authEpochVersion }
         : {}),
       ...(normalizeOptionalString(binding.extraSystemPromptHash)
         ? { extraSystemPromptHash: normalizeOptionalString(binding.extraSystemPromptHash) }
@@ -149,7 +156,19 @@ export function resolveCliSessionReuse(params: {
     return { invalidatedReason: "auth-profile" };
   }
   const storedAuthEpoch = normalizeOptionalString(binding?.authEpoch);
-  if (storedAuthEpoch !== currentAuthEpoch) {
+  const storedAuthEpochVersion = binding?.authEpochVersion;
+  // Strict auth-epoch enforcement only applies to bindings written by the
+  // identity-only hashing contract (version >= 2). Pre-fix bindings hashed
+  // rotating token material (access/refresh/expires), so their stored
+  // `authEpoch` can legitimately differ from any `currentAuthEpoch` computed
+  // by the new code. Accept them on the first post-upgrade turn; the
+  // immediately-following `setCliSessionBinding` rewrites the stored hash
+  // and stamps `authEpochVersion: 2`, after which the strict check applies.
+  if (
+    typeof storedAuthEpochVersion === "number" &&
+    storedAuthEpochVersion >= 2 &&
+    storedAuthEpoch !== currentAuthEpoch
+  ) {
     return { invalidatedReason: "auth-epoch" };
   }
   const storedExtraSystemPromptHash = normalizeOptionalString(binding?.extraSystemPromptHash);

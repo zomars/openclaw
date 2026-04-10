@@ -39,33 +39,39 @@ function encodeUnknown(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
 
+// Identity-only encoders: hash the stable "which credential are we using"
+// fingerprint, never the rotating bearer material (access/refresh/expires/token).
+//
+// OAuth access tokens rotate every ~hour on refresh, and Anthropic/OpenAI/etc.
+// may also rotate refresh tokens on exchange. If any of those fields contribute
+// to `authEpoch`, every background token rotation invalidates every persisted
+// CLI session binding and wipes the agent's conversation memory — even though
+// the underlying account is unchanged. The intent of `authEpoch` is to detect
+// when the user swapped which credential they are using (logout/login, auth
+// profile change, API key rotation), not when a short-lived token rotated
+// behind the scenes. Keep only fields that move on explicit identity changes.
 function encodeClaudeCredential(credential: ClaudeCliCredential): string {
-  if (credential.type === "oauth") {
-    return JSON.stringify([
-      "oauth",
-      credential.provider,
-      credential.access,
-      credential.refresh,
-      credential.expires,
-    ]);
-  }
-  return JSON.stringify(["token", credential.provider, credential.token, credential.expires]);
+  // Claude CLI credentials do not carry an explicit account identifier in
+  // their parsed shape; `type` + `provider` is the most specific stable
+  // fingerprint available. An oauth→token mechanism swap still flips the
+  // hash; an explicit re-login with a different Anthropic account will not
+  // (rare edge case; users can reset sessions manually if needed).
+  return JSON.stringify([credential.type, credential.provider]);
 }
 
 function encodeCodexCredential(credential: CodexCliCredential): string {
-  return JSON.stringify([
-    credential.type,
-    credential.provider,
-    credential.access,
-    credential.refresh,
-    credential.expires,
-    credential.accountId ?? null,
-  ]);
+  // Codex OAuth carries an optional `accountId` that provides per-account
+  // granularity without touching rotating token material.
+  return JSON.stringify([credential.type, credential.provider, credential.accountId ?? null]);
 }
 
 function encodeAuthProfileCredential(credential: AuthProfileCredential): string {
   switch (credential.type) {
     case "api_key":
+      // API keys are user-supplied static values — hashing the key is safe
+      // and correctly invalidates sessions on explicit rotation. `metadata`
+      // is dropped because it may carry refresh-adjacent fields like cached
+      // quotas or last-sync timestamps.
       return JSON.stringify([
         "api_key",
         credential.provider,
@@ -73,25 +79,24 @@ function encodeAuthProfileCredential(credential: AuthProfileCredential): string 
         encodeUnknown(credential.keyRef),
         credential.email ?? null,
         credential.displayName ?? null,
-        encodeUnknown(credential.metadata),
       ]);
     case "token":
+      // `token` and `expires` rotate on refresh; `tokenRef` is the stable
+      // handle that only moves when the user re-points the credential.
       return JSON.stringify([
         "token",
         credential.provider,
-        credential.token ?? null,
         encodeUnknown(credential.tokenRef),
-        credential.expires ?? null,
         credential.email ?? null,
         credential.displayName ?? null,
       ]);
     case "oauth":
+      // Drop access/refresh/expires; keep every other field that could
+      // distinguish one OAuth identity from another (clientId, email,
+      // displayName, enterpriseUrl, projectId, accountId, managedBy).
       return JSON.stringify([
         "oauth",
         credential.provider,
-        credential.access,
-        credential.refresh,
-        credential.expires,
         credential.clientId ?? null,
         credential.email ?? null,
         credential.displayName ?? null,

@@ -82,6 +82,7 @@ describe("cli-session helpers", () => {
       sessionId: "cli-session-1",
       authProfileId: "anthropic:work",
       authEpoch: "auth-epoch-a",
+      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-a",
       mcpConfigHash: "mcp-a",
     };
@@ -176,6 +177,7 @@ describe("cli-session helpers", () => {
       sessionId: "cli-session-1",
       authProfileId: "anthropic:work",
       authEpoch: "auth-epoch-a",
+      authEpochVersion: 2,
       extraSystemPromptHash: "prompt-a",
       mcpConfigHash: "unrelated-stored-hash",
     };
@@ -190,6 +192,74 @@ describe("cli-session helpers", () => {
         legacyMcpConfigHash: "legacy-hash",
       }),
     ).toEqual({ invalidatedReason: "mcp" });
+  });
+
+  it("accepts a pre-fix binding whose authEpoch no longer matches (no version stamp)", () => {
+    // Regression: bindings persisted before the identity-only auth-epoch
+    // contract hashed rotating OAuth token material (access/refresh/expires),
+    // so their stored `authEpoch` cannot be reproduced by the new code. The
+    // absence of `authEpochVersion` means "legacy format", which must get a
+    // one-time pass so existing sessions survive the upgrade. The following
+    // turn rewrites the binding with `authEpochVersion: 2` and the new
+    // stable hash, after which strict enforcement applies.
+    const binding = {
+      sessionId: "cli-session-legacy-auth",
+      authProfileId: "anthropic:work",
+      authEpoch: "old-hash-that-included-rotating-access-token",
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "new-stable-identity-only-hash",
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-legacy-auth" });
+  });
+
+  it("invalidates a new-format binding when authEpoch changes", () => {
+    // Once a binding has `authEpochVersion: 2`, strict auth-epoch matching
+    // applies. Under the new identity-only contract, any change here means
+    // the user intentionally switched credentials (re-login, profile swap,
+    // api key rotation), so invalidation is correct.
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "stable-hash-a",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "stable-hash-b",
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ invalidatedReason: "auth-epoch" });
+  });
+
+  it("persists and rehydrates authEpochVersion on round trip", () => {
+    const entry: SessionEntry = {
+      sessionId: "openclaw-session",
+      updatedAt: Date.now(),
+    };
+    setCliSessionBinding(entry, "claude-cli", {
+      sessionId: "cli-session-1",
+      authEpoch: "stable-hash",
+      authEpochVersion: 2,
+    });
+
+    const hydrated = getCliSessionBinding(entry, "claude-cli");
+    expect(hydrated?.authEpoch).toBe("stable-hash");
+    expect(hydrated?.authEpochVersion).toBe(2);
   });
 
   it("clears provider-scoped and global CLI session state", () => {

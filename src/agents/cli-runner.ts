@@ -34,7 +34,9 @@ export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPi
                 cliSessionBinding: {
                   sessionId: resultParams.effectiveCliSessionId,
                   ...(params.authProfileId ? { authProfileId: params.authProfileId } : {}),
-                  ...(context.authEpoch ? { authEpoch: context.authEpoch } : {}),
+                  ...(context.authEpoch
+                    ? { authEpoch: context.authEpoch, authEpochVersion: 2 }
+                    : {}),
                   ...(context.extraSystemPromptHash
                     ? { extraSystemPromptHash: context.extraSystemPromptHash }
                     : {}),

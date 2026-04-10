@@ -72,6 +72,16 @@ export type CliSessionBinding = {
   sessionId: string;
   authProfileId?: string;
   authEpoch?: string;
+  /**
+   * Version stamp for the `authEpoch` hashing contract. Bindings written by
+   * pre-identity-only gateway builds omit this field; their `authEpoch` is
+   * hashed over rotating token material and must be accepted on the first
+   * post-upgrade turn so existing sessions survive the cutover. Bindings
+   * written by current code set this to `2`, at which point `authEpoch` is
+   * enforced strictly (it only moves on explicit identity changes, so strict
+   * enforcement is safe). See `resolveCliSessionReuse`.
+   */
+  authEpochVersion?: number;
   extraSystemPromptHash?: string;
   mcpConfigHash?: string;
 };
