@@ -22,24 +22,25 @@ async function createTempDir(label: string): Promise<string> {
   return dir;
 }
 
+type FieldMap = Record<string, string>;
+
 /**
- * Writes a synthetic Claude CLI session file with the topic metadata
- * embedded the same way the real runtime writes it: a `queue-operation`
- * record whose `content` field contains a markdown code block of JSON
- * including `"topic_id": "<tid>"`. The embedded JSON is stringified,
- * so the inner quotes end up escaped as `\"topic_id\": \"<tid>\"` in
- * the outer JSON line — this is exactly the format the regex in the
- * canary has to handle.
+ * Writes a synthetic Claude CLI session file whose head contains a
+ * `queue-operation` record with the given metadata fields embedded in
+ * the `content` string exactly the way the real runtime writes them:
+ * a markdown code block containing stringified JSON inside a JSON
+ * content field (so the inner quotes end up escaped). This is the format
+ * the canary's head-scan regex has to tolerate.
  */
 async function writeClaudeSessionFile(params: {
   projectDir: string;
   sessionId: string;
-  topicIds: readonly number[];
+  fields: readonly FieldMap[];
   padToBytes?: number;
 }): Promise<string> {
   const filePath = path.join(params.projectDir, `${params.sessionId}.jsonl`);
-  const contextLines = params.topicIds.map((tid) => {
-    const contextJson = JSON.stringify({ message_id: "1", topic_id: String(tid) }, null, 2);
+  const contextLines = params.fields.map((fieldMap) => {
+    const contextJson = JSON.stringify(fieldMap, null, 2);
     return JSON.stringify({
       type: "queue-operation",
       operation: "enqueue",
@@ -71,112 +72,125 @@ async function writeAgentStore(params: {
 async function createFixture(label: string): Promise<{
   agentsDir: string;
   claudeProjectsDir: string;
-  projectDir: string;
+  project(name: string): Promise<string>;
 }> {
   const root = await createTempDir(label);
   const agentsDir = path.join(root, "agents");
   const claudeProjectsDir = path.join(root, "claude-projects");
-  const projectDir = path.join(claudeProjectsDir, "-Users-test--openclaw-workspace");
   await fs.mkdir(agentsDir, { recursive: true });
-  await fs.mkdir(projectDir, { recursive: true });
-  return { agentsDir, claudeProjectsDir, projectDir };
+  await fs.mkdir(claudeProjectsDir, { recursive: true });
+  return {
+    agentsDir,
+    claudeProjectsDir,
+    async project(name: string) {
+      const p = path.join(claudeProjectsDir, name);
+      await fs.mkdir(p, { recursive: true });
+      return p;
+    },
+  };
 }
 
-describe("extractTopicIdsFromContent", () => {
-  it("extracts topic_id from a raw JSON object", () => {
-    const ids = __testing__.extractTopicIdsFromContent('{"topic_id": "42"}');
-    expect([...ids]).toEqual([42]);
-  });
-
-  it("extracts topic_id when the JSON is nested inside a stringified content field", () => {
+describe("extractFieldsFromContent", () => {
+  it("extracts topic_id from a stringified queue-operation content", () => {
     const embedded = JSON.stringify({
       content: 'Conversation info:\n```json\n{\n  "topic_id": "25123"\n}\n```\n',
     });
-    const ids = __testing__.extractTopicIdsFromContent(embedded);
-    expect([...ids]).toEqual([25123]);
+    const fields = __testing__.extractFieldsFromContent(embedded);
+    expect(fields.topic_id).toEqual(new Set(["25123"]));
   });
 
-  it("extracts multiple distinct topic_ids from the same blob", () => {
-    const content = '{"topic_id":"1"} some text {"topic_id":"2"}';
-    expect([...__testing__.extractTopicIdsFromContent(content)].toSorted((a, b) => a - b)).toEqual([
-      1, 2,
-    ]);
+  it("extracts sender_id for WhatsApp-style metadata", () => {
+    const embedded = JSON.stringify({
+      content: '```json\n{\n  "sender_id": "+15551234567"\n}\n```',
+    });
+    const fields = __testing__.extractFieldsFromContent(embedded);
+    expect(fields.sender_id).toEqual(new Set(["+15551234567"]));
   });
 
-  it("returns no ids for content that has no topic reference", () => {
-    expect(__testing__.extractTopicIdsFromContent("{}").size).toBe(0);
-  });
-});
-
-describe("extractTopicIdFromKey", () => {
-  it("pulls the trailing numeric id off a telegram session key", () => {
-    expect(
-      __testing__.extractTopicIdFromKey(
-        "agent:default:telegram:default:direct:1324919825:thread:1324919825:25123",
-      ),
-    ).toBe(25123);
+  it("extracts slack-style decimal topic ids", () => {
+    const embedded = JSON.stringify({
+      content: '```json\n{\n  "topic_id": "1775591037.217389"\n}\n```',
+    });
+    const fields = __testing__.extractFieldsFromContent(embedded);
+    expect(fields.topic_id).toEqual(new Set(["1775591037.217389"]));
   });
 
-  it("returns undefined for keys with no trailing numeric id", () => {
-    expect(__testing__.extractTopicIdFromKey("agent:default:main")).toBeUndefined();
+  it("collects all distinct values for a repeated field", () => {
+    const content = '{"topic_id":"1"} some text {"topic_id":"1"} more {"topic_id":"2"}';
+    const fields = __testing__.extractFieldsFromContent(content);
+    expect([...fields.topic_id].toSorted((a, b) => a.localeCompare(b))).toEqual(["1", "2"]);
   });
 });
 
-describe("runCliSessionHealthCheck", () => {
-  it("returns no findings when every binding points at its largest recoverable Claude CLI session", async () => {
-    const fx = await createFixture("healthy");
+describe("extractBindingIdentity", () => {
+  it("reads telegram thread id from deliveryContext", () => {
+    const identity = __testing__.extractBindingIdentity({
+      deliveryContext: { channel: "telegram", to: "telegram:123", threadId: 42 },
+    });
+    expect(identity).toEqual({
+      channel: "telegram",
+      threadId: "42",
+      to: "telegram:123",
+      bareTo: "123",
+      groupId: undefined,
+    });
+  });
+
+  it("reads slack decimal thread id as string", () => {
+    const identity = __testing__.extractBindingIdentity({
+      deliveryContext: { channel: "slack", to: "user:U0A", threadId: "1775346922.923489" },
+    });
+    expect(identity?.threadId).toBe("1775346922.923489");
+    expect(identity?.bareTo).toBe("U0A");
+  });
+
+  it("reads whatsapp direct identity with no threadId", () => {
+    const identity = __testing__.extractBindingIdentity({
+      deliveryContext: { channel: "whatsapp", to: "+15551234567" },
+    });
+    expect(identity?.channel).toBe("whatsapp");
+    expect(identity?.threadId).toBeUndefined();
+    expect(identity?.bareTo).toBe("+15551234567");
+  });
+
+  it("falls back to origin.provider when deliveryContext.channel is missing", () => {
+    const identity = __testing__.extractBindingIdentity({
+      deliveryContext: { threadId: "1775766214.117699" },
+      origin: { provider: "slack", threadId: "1775766214.117699" },
+    });
+    expect(identity?.channel).toBe("slack");
+    expect(identity?.threadId).toBe("1775766214.117699");
+  });
+
+  it("returns undefined for entries with no messaging context", () => {
+    expect(__testing__.extractBindingIdentity({ sessionId: "abc" })).toBeUndefined();
+  });
+});
+
+describe("runCliSessionHealthCheck (multi-channel)", () => {
+  it("flags a stale Telegram binding by topic_id match", async () => {
+    const fx = await createFixture("tg-stale");
+    const projectDir = await fx.project("-Users-test--openclaw-workspace");
     await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
+      projectDir,
       sessionId: "aaaaaaaa-0000-0000-0000-000000000001",
-      topicIds: [100],
-      padToBytes: 500_000,
-    });
-    await writeAgentStore({
-      agentsDir: fx.agentsDir,
-      agentName: "default",
-      store: {
-        "agent:default:telegram:default:direct:1:thread:100": {
-          cliSessionBindings: {
-            "claude-cli": { sessionId: "aaaaaaaa-0000-0000-0000-000000000001" },
-          },
-        },
-      },
-    });
-
-    const result = await runCliSessionHealthCheck({
-      agentsDir: fx.agentsDir,
-      claudeProjectsDir: fx.claudeProjectsDir,
-    });
-    expect(result.findings).toEqual([]);
-    expect(result.topicsWithHistory).toBe(1);
-    expect(result.claudeSessionFilesScanned).toBe(1);
-  });
-
-  it("flags a binding whose current Claude CLI session is dramatically smaller than the best recoverable one for the same topic", async () => {
-    // This is the exact failure mode the user hit: the binding points at
-    // a ~30 KB fresh session that was created after a silent reset, while
-    // a ~600 KB session with the real conversation sits unused in the
-    // Claude CLI project directory.
-    const fx = await createFixture("amnesiac");
-    await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
-      sessionId: "bbbbbbbb-0000-0000-0000-000000000001",
-      topicIds: [200],
+      fields: [{ topic_id: "25123" }],
       padToBytes: 600_000,
     });
     await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
-      sessionId: "cccccccc-0000-0000-0000-000000000001",
-      topicIds: [200],
+      projectDir,
+      sessionId: "bbbbbbbb-0000-0000-0000-000000000001",
+      fields: [{ topic_id: "25123" }],
       padToBytes: 30_000,
     });
     await writeAgentStore({
       agentsDir: fx.agentsDir,
       agentName: "default",
       store: {
-        "agent:default:telegram:default:direct:1:thread:200": {
+        "agent:default:telegram:default:direct:1:thread:25123": {
+          deliveryContext: { channel: "telegram", to: "telegram:1", threadId: 25123 },
           cliSessionBindings: {
-            "claude-cli": { sessionId: "cccccccc-0000-0000-0000-000000000001" },
+            "claude-cli": { sessionId: "bbbbbbbb-0000-0000-0000-000000000001" },
           },
         },
       },
@@ -187,34 +201,38 @@ describe("runCliSessionHealthCheck", () => {
       claudeProjectsDir: fx.claudeProjectsDir,
     });
     expect(result.findings).toHaveLength(1);
-    const finding = result.findings[0];
-    expect(finding?.topicId).toBe(200);
-    expect(finding?.currentSessionId?.startsWith("cccccccc")).toBe(true);
-    expect(finding?.currentFileExists).toBe(true);
-    expect(finding?.currentSizeBytes).toBeGreaterThanOrEqual(30_000);
-    expect(finding?.bestSessionId.startsWith("bbbbbbbb")).toBe(true);
-    expect(finding?.bestSizeBytes).toBeGreaterThanOrEqual(600_000);
-    expect(finding?.recoverableSiblings).toBe(1);
+    expect(result.findings[0]?.channel).toBe("telegram");
+    expect(result.findings[0]?.bestSessionId.startsWith("aaaaaaaa")).toBe(true);
+    expect(result.findings[0]?.conversationLabel).toBe("telegram:thread:25123");
   });
 
-  it("flags a binding whose currently-bound sessionId no longer has any Claude CLI file for the topic", async () => {
-    // When the bound sessionId does not appear in the topic index at all,
-    // `currentFileExists` is false and the finding fires regardless of
-    // size ratio — the binding is unambiguously stale.
-    const fx = await createFixture("missing");
+  it("flags a stale Slack binding by decimal topic_id", async () => {
+    const fx = await createFixture("slack-stale");
+    const projectDir = await fx.project("-Users-test--openclaw-workspace-hank");
     await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
+      projectDir,
+      sessionId: "cccccccc-0000-0000-0000-000000000001",
+      fields: [{ topic_id: "1775766214.117699" }],
+      padToBytes: 200_000,
+    });
+    await writeClaudeSessionFile({
+      projectDir,
       sessionId: "dddddddd-0000-0000-0000-000000000001",
-      topicIds: [300],
-      padToBytes: 50_000,
+      fields: [{ topic_id: "1775766214.117699" }],
+      padToBytes: 15_000,
     });
     await writeAgentStore({
       agentsDir: fx.agentsDir,
-      agentName: "default",
+      agentName: "hank",
       store: {
-        "agent:default:telegram:default:direct:1:thread:300": {
+        "agent:hank:slack:hank:direct:u:thread:1775766214.117699": {
+          deliveryContext: {
+            channel: "slack",
+            to: "user:U0A",
+            threadId: "1775766214.117699",
+          },
           cliSessionBindings: {
-            "claude-cli": { sessionId: "eeeeeeee-0000-0000-0000-000000000001" },
+            "claude-cli": { sessionId: "dddddddd-0000-0000-0000-000000000001" },
           },
         },
       },
@@ -225,21 +243,31 @@ describe("runCliSessionHealthCheck", () => {
       claudeProjectsDir: fx.claudeProjectsDir,
     });
     expect(result.findings).toHaveLength(1);
-    const finding = result.findings[0];
-    expect(finding?.currentFileExists).toBe(false);
-    expect(finding?.currentSizeBytes).toBe(0);
-    expect(finding?.bestSessionId.startsWith("dddddddd")).toBe(true);
+    expect(result.findings[0]?.channel).toBe("slack");
+    expect(result.findings[0]?.bestSessionId.startsWith("cccccccc")).toBe(true);
   });
 
-  it("does not flag bindings for topics with no Claude CLI history at all", async () => {
-    // A topic with no recoverable file is not recoverable; never fire a
-    // finding in that case, even if the binding has a stale sessionId.
-    const fx = await createFixture("no-history");
+  it("flags a stale WhatsApp direct binding by sender_id match on the bare phone number", async () => {
+    const fx = await createFixture("wa-stale");
+    const projectDir = await fx.project("-Users-test--openclaw-workspace-solayre");
+    await writeClaudeSessionFile({
+      projectDir,
+      sessionId: "eeeeeeee-0000-0000-0000-000000000001",
+      fields: [{ sender_id: "+15551234567" }],
+      padToBytes: 2_000_000,
+    });
+    await writeClaudeSessionFile({
+      projectDir,
+      sessionId: "ffffffff-0000-0000-0000-000000000001",
+      fields: [{ sender_id: "+15551234567" }],
+      padToBytes: 30_000,
+    });
     await writeAgentStore({
       agentsDir: fx.agentsDir,
-      agentName: "default",
+      agentName: "solayre",
       store: {
-        "agent:default:telegram:default:direct:1:thread:400": {
+        "agent:solayre:whatsapp:solayre:direct:+15551234567": {
+          deliveryContext: { channel: "whatsapp", to: "+15551234567" },
           cliSessionBindings: {
             "claude-cli": { sessionId: "ffffffff-0000-0000-0000-000000000001" },
           },
@@ -251,32 +279,74 @@ describe("runCliSessionHealthCheck", () => {
       agentsDir: fx.agentsDir,
       claudeProjectsDir: fx.claudeProjectsDir,
     });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.channel).toBe("whatsapp");
+    expect(result.findings[0]?.conversationLabel).toBe("whatsapp:+15551234567");
+    expect(result.findings[0]?.bestSessionId.startsWith("eeeeeeee")).toBe(true);
+  });
+
+  it("scopes candidates to the same project directory as the current binding", async () => {
+    // Regression: if solayre-coworker binds a conversation with
+    // +15551234567 and a different agent's project dir (solayre-leads)
+    // also has a big session file mentioning +15551234567, the canary
+    // must NOT propose the cross-agent file. Binding → current project →
+    // scoped candidate set.
+    const fx = await createFixture("scoping");
+    const coworkerDir = await fx.project("-Users-test--openclaw-workspace-solayre-coworker");
+    const leadsDir = await fx.project("-Users-test--openclaw-workspace-solayre-leads");
+    // Huge file in the WRONG project (leads) for the same phone number.
+    await writeClaudeSessionFile({
+      projectDir: leadsDir,
+      sessionId: "11111111-0000-0000-0000-000000000001",
+      fields: [{ sender_id: "+15551234567" }],
+      padToBytes: 5_000_000,
+    });
+    // Medium-sized current file in the CORRECT project (coworker).
+    await writeClaudeSessionFile({
+      projectDir: coworkerDir,
+      sessionId: "22222222-0000-0000-0000-000000000001",
+      fields: [{ sender_id: "+15551234567" }],
+      padToBytes: 100_000,
+    });
+    await writeAgentStore({
+      agentsDir: fx.agentsDir,
+      agentName: "solayre-coworker",
+      store: {
+        "agent:solayre-coworker:whatsapp:solayre:direct:+15551234567": {
+          deliveryContext: { channel: "whatsapp", to: "+15551234567" },
+          cliSessionBindings: {
+            "claude-cli": { sessionId: "22222222-0000-0000-0000-000000000001" },
+          },
+        },
+      },
+    });
+
+    const result = await runCliSessionHealthCheck({
+      agentsDir: fx.agentsDir,
+      claudeProjectsDir: fx.claudeProjectsDir,
+    });
+    // Only the cross-project huge file matches the conversation, but
+    // it's in a different project dir — scoping must exclude it.
     expect(result.findings).toEqual([]);
   });
 
-  it("does not flag healthy active topics where the best file is the current file", async () => {
-    const fx = await createFixture("best-is-current");
+  it("does not flag a topic binding with a small but uniquely-bound current file (best == current)", async () => {
+    const fx = await createFixture("healthy");
+    const projectDir = await fx.project("-Users-test--openclaw-workspace");
     await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
-      sessionId: "11111111-0000-0000-0000-000000000001",
-      topicIds: [500],
-      padToBytes: 200_000,
-    });
-    // An older, smaller sibling for the same topic must NOT cause a warning
-    // when the current binding is already on the bigger file.
-    await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
-      sessionId: "22222222-0000-0000-0000-000000000001",
-      topicIds: [500],
-      padToBytes: 10_000,
+      projectDir,
+      sessionId: "33333333-0000-0000-0000-000000000001",
+      fields: [{ topic_id: "900" }],
+      padToBytes: 40_000,
     });
     await writeAgentStore({
       agentsDir: fx.agentsDir,
       agentName: "default",
       store: {
-        "agent:default:telegram:default:direct:1:thread:500": {
+        "agent:default:telegram:default:direct:1:thread:900": {
+          deliveryContext: { channel: "telegram", to: "telegram:1", threadId: 900 },
           cliSessionBindings: {
-            "claude-cli": { sessionId: "11111111-0000-0000-0000-000000000001" },
+            "claude-cli": { sessionId: "33333333-0000-0000-0000-000000000001" },
           },
         },
       },
@@ -289,38 +359,23 @@ describe("runCliSessionHealthCheck", () => {
     expect(result.findings).toEqual([]);
   });
 
-  it("scans multiple agents and reports findings per-agent", async () => {
-    const fx = await createFixture("multi-agent");
+  it("flags a binding whose current sessionId has no file at all (currentFileExists=false)", async () => {
+    const fx = await createFixture("missing");
+    const projectDir = await fx.project("-Users-test--openclaw-workspace");
     await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
-      sessionId: "11111111-0000-0000-0000-000000000002",
-      topicIds: [600],
-      padToBytes: 400_000,
-    });
-    await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
-      sessionId: "22222222-0000-0000-0000-000000000002",
-      topicIds: [600],
-      padToBytes: 20_000,
+      projectDir,
+      sessionId: "44444444-0000-0000-0000-000000000001",
+      fields: [{ topic_id: "800" }],
+      padToBytes: 120_000,
     });
     await writeAgentStore({
       agentsDir: fx.agentsDir,
       agentName: "default",
       store: {
-        "agent:default:telegram:default:direct:1:thread:600": {
+        "agent:default:telegram:default:direct:1:thread:800": {
+          deliveryContext: { channel: "telegram", to: "telegram:1", threadId: 800 },
           cliSessionBindings: {
-            "claude-cli": { sessionId: "22222222-0000-0000-0000-000000000002" },
-          },
-        },
-      },
-    });
-    await writeAgentStore({
-      agentsDir: fx.agentsDir,
-      agentName: "hank",
-      store: {
-        "agent:hank:telegram:default:direct:1:thread:600": {
-          cliSessionBindings: {
-            "claude-cli": { sessionId: "11111111-0000-0000-0000-000000000002" },
+            "claude-cli": { sessionId: "55555555-1111-0000-0000-000000000001" },
           },
         },
       },
@@ -331,61 +386,58 @@ describe("runCliSessionHealthCheck", () => {
       claudeProjectsDir: fx.claudeProjectsDir,
     });
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]?.agent).toBe("default");
-    expect(result.agentsScanned).toBe(2);
+    expect(result.findings[0]?.currentFileExists).toBe(false);
+    expect(result.findings[0]?.currentSizeBytes).toBe(0);
   });
 
-  it("gracefully skips unreadable project subdirectories", async () => {
-    const fx = await createFixture("unreadable");
+  it("ignores bindings with no messaging deliveryContext", async () => {
+    const fx = await createFixture("no-ctx");
+    const projectDir = await fx.project("-Users-test--openclaw-workspace");
     await writeClaudeSessionFile({
-      projectDir: fx.projectDir,
-      sessionId: "55555555-0000-0000-0000-000000000001",
-      topicIds: [700],
-      padToBytes: 100_000,
+      projectDir,
+      sessionId: "66666666-0000-0000-0000-000000000001",
+      fields: [{ topic_id: "700" }],
+      padToBytes: 200_000,
     });
-    // Simulate an entry in the claude-projects dir that is not a directory
-    // (e.g. a stray file) to confirm it does not crash the walk.
-    await fs.writeFile(path.join(fx.claudeProjectsDir, "not-a-dir"), "unrelated", "utf-8");
-
+    await writeAgentStore({
+      agentsDir: fx.agentsDir,
+      agentName: "default",
+      store: {
+        "agent:default:script:cron-123": {
+          cliSessionBindings: {
+            "claude-cli": { sessionId: "77777777-0000-0000-0000-000000000001" },
+          },
+        },
+      },
+    });
     const result = await runCliSessionHealthCheck({
       agentsDir: fx.agentsDir,
       claudeProjectsDir: fx.claudeProjectsDir,
     });
-    expect(result.topicsWithHistory).toBe(1);
     expect(result.findings).toEqual([]);
   });
 
-  it("returns empty when the Claude projects directory does not exist", async () => {
+  it("returns an empty result when the claude projects directory does not exist", async () => {
     const fx = await createFixture("no-claude");
     await fs.rm(fx.claudeProjectsDir, { recursive: true, force: true });
     await writeAgentStore({
       agentsDir: fx.agentsDir,
       agentName: "default",
       store: {
-        "agent:default:telegram:default:direct:1:thread:999": {
+        "agent:default:telegram:default:direct:1:thread:1": {
+          deliveryContext: { channel: "telegram", to: "telegram:1", threadId: 1 },
           cliSessionBindings: {
-            "claude-cli": { sessionId: "00000000-0000-0000-0000-000000000099" },
+            "claude-cli": { sessionId: "88888888-0000-0000-0000-000000000001" },
           },
         },
       },
     });
-
     const result = await runCliSessionHealthCheck({
       agentsDir: fx.agentsDir,
       claudeProjectsDir: fx.claudeProjectsDir,
     });
     expect(result.findings).toEqual([]);
-    expect(result.topicsWithHistory).toBe(0);
     expect(result.claudeSessionFilesScanned).toBe(0);
-  });
-
-  it("returns empty when the agents directory does not exist", async () => {
-    const result = await runCliSessionHealthCheck({
-      agentsDir: path.join(os.tmpdir(), `openclaw-health-missing-${Date.now()}`),
-      claudeProjectsDir: path.join(os.tmpdir(), `openclaw-health-missing-${Date.now()}-claude`),
-    });
-    expect(result.findings).toEqual([]);
-    expect(result.agentsScanned).toBe(0);
   });
 });
 
@@ -396,37 +448,48 @@ describe("formatHealthCheckWarning", () => {
         agentsScanned: 1,
         bindingsScanned: 0,
         claudeSessionFilesScanned: 0,
-        topicsWithHistory: 0,
         findings: [],
       }),
     ).toBeUndefined();
   });
 
-  it("formats a single-finding warning and marks missing sessionFiles", () => {
+  it("renders conversation labels for multiple channels and marks missing files", () => {
     const message = formatHealthCheckWarning({
-      agentsScanned: 1,
-      bindingsScanned: 1,
-      claudeSessionFilesScanned: 2,
-      topicsWithHistory: 1,
+      agentsScanned: 2,
+      bindingsScanned: 2,
+      claudeSessionFilesScanned: 4,
       findings: [
         {
           agent: "default",
-          sessionKey: "agent:default:telegram:default:direct:1:thread:700",
-          topicId: 700,
-          currentSessionId: "cccccccc-1111-2222-3333-444444444444",
-          currentSizeBytes: 0,
-          currentFileExists: false,
-          bestSessionId: "bbbbbbbb-1111-2222-3333-444444444444",
-          bestSizeBytes: 500_000,
+          sessionKey: "agent:default:telegram:default:direct:1:thread:25123",
+          channel: "telegram",
+          threadId: "25123",
+          conversationLabel: "telegram:thread:25123",
+          currentSessionId: "bbbbbbbb-0000-0000-0000-000000000001",
+          currentSizeBytes: 30000,
+          currentFileExists: true,
+          bestSessionId: "aaaaaaaa-0000-0000-0000-000000000001",
+          bestSizeBytes: 600000,
           bestFilePath: "/tmp/ignored.jsonl",
           recoverableSiblings: 0,
         },
+        {
+          agent: "solayre",
+          sessionKey: "agent:solayre:whatsapp:solayre:direct:+15551234567",
+          channel: "whatsapp",
+          conversationLabel: "whatsapp:+15551234567",
+          currentSessionId: "ffffffff-0000-0000-0000-000000000001",
+          currentSizeBytes: 0,
+          currentFileExists: false,
+          bestSessionId: "eeeeeeee-0000-0000-0000-000000000001",
+          bestSizeBytes: 2_000_000,
+          bestFilePath: "/tmp/ignored.jsonl",
+          recoverableSiblings: 2,
+        },
       ],
     });
-    expect(message).toContain("1 binding");
-    expect(message).toContain("topic=700");
-    expect(message).toContain("cccccccc");
-    expect(message).toContain("bbbbbbbb");
+    expect(message).toContain("telegram:thread:25123");
+    expect(message).toContain("whatsapp:+15551234567");
     expect(message).toContain("(missing)");
   });
 });
