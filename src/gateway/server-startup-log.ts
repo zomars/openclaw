@@ -1,4 +1,8 @@
 import chalk from "chalk";
+import {
+  formatHealthCheckWarning,
+  runCliSessionHealthCheck,
+} from "../agents/cli-session-health.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveConfiguredModelRef } from "../agents/model-selection.js";
 import type { loadConfig } from "../config/config.js";
@@ -44,4 +48,20 @@ export function logGatewayStartup(params: {
       "Run `openclaw security audit`.";
     params.log.warn(warning);
   }
+
+  // Best-effort canary: walks session stores off-thread and logs a warning
+  // if any CLI session binding is pointing at a tiny sessionFile while a
+  // much larger historical session exists for the same topic. This is the
+  // signal that the old amnesia-class bug fired (or that something else
+  // unexpected wiped a binding). Read-only; never blocks startup.
+  void runCliSessionHealthCheck()
+    .then((result) => {
+      const warning = formatHealthCheckWarning(result);
+      if (warning) {
+        params.log.warn(warning);
+      }
+    })
+    .catch(() => {
+      // Health check is opportunistic; failures must not affect boot.
+    });
 }

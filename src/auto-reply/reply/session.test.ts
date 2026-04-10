@@ -2120,8 +2120,6 @@ describe("persistSessionUsageUpdate", () => {
       cliSessionBinding: {
         sessionId: "cli-session-1",
         authProfileId: "anthropic:default",
-        extraSystemPromptHash: "prompt-hash",
-        mcpConfigHash: "mcp-hash",
       },
       contextTokensUsed: 200_000,
     });
@@ -2133,8 +2131,6 @@ describe("persistSessionUsageUpdate", () => {
     expect(stored[sessionKey].cliSessionBindings?.["claude-cli"]).toEqual({
       sessionId: "cli-session-1",
       authProfileId: "anthropic:default",
-      extraSystemPromptHash: "prompt-hash",
-      mcpConfigHash: "mcp-hash",
     });
   });
 

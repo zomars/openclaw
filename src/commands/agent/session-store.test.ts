@@ -167,7 +167,7 @@ describe("updateSessionStoreAfterAgentRun", () => {
             sessionId: "claude-cli-session-1",
             cliSessionBinding: {
               sessionId: "claude-cli-session-1",
-              authEpoch: "auth-epoch-1",
+              authProfileId: "anthropic:work",
             },
           },
         },
@@ -182,13 +182,13 @@ describe("updateSessionStoreAfterAgentRun", () => {
     expect(second.sessionKey).toBe(first.sessionKey);
     expect(second.sessionEntry?.cliSessionBindings?.["claude-cli"]).toEqual({
       sessionId: "claude-cli-session-1",
-      authEpoch: "auth-epoch-1",
+      authProfileId: "anthropic:work",
     });
 
     const persisted = loadSessionStore(storePath, { skipCache: true })[first.sessionKey!];
     expect(persisted?.cliSessionBindings?.["claude-cli"]).toEqual({
       sessionId: "claude-cli-session-1",
-      authEpoch: "auth-epoch-1",
+      authProfileId: "anthropic:work",
     });
   });
 });

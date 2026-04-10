@@ -70,20 +70,17 @@ export type AcpSessionRuntimeOptions = {
 
 export type CliSessionBinding = {
   sessionId: string;
-  authProfileId?: string;
-  authEpoch?: string;
   /**
-   * Version stamp for the `authEpoch` hashing contract. Bindings written by
-   * pre-identity-only gateway builds omit this field; their `authEpoch` is
-   * hashed over rotating token material and must be accepted on the first
-   * post-upgrade turn so existing sessions survive the cutover. Bindings
-   * written by current code set this to `2`, at which point `authEpoch` is
-   * enforced strictly (it only moves on explicit identity changes, so strict
-   * enforcement is safe). See `resolveCliSessionReuse`.
+   * Previous CLI session IDs that were replaced on this binding, newest first,
+   * capped at 10 entries. Populated by `setCliSessionBinding` whenever a new
+   * `sessionId` replaces an existing non-matching one, so a historical
+   * sessionId is never silently discarded from the store — recovery from
+   * unintended resets does not require scanning the filesystem. Clients must
+   * treat this list as informational only; the live session is always
+   * `sessionId`.
    */
-  authEpochVersion?: number;
-  extraSystemPromptHash?: string;
-  mcpConfigHash?: string;
+  previousSessionIds?: string[];
+  authProfileId?: string;
 };
 
 export type SessionCompactionCheckpointReason =

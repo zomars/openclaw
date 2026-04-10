@@ -1617,7 +1617,6 @@ describe("gateway server sessions", () => {
             "claude-cli": {
               sessionId: "cli-session-123",
               authProfileId: "anthropic:work",
-              extraSystemPromptHash: "prompt-hash",
             },
           },
           claudeCliSessionId: "cli-session-123",
@@ -1675,8 +1674,7 @@ describe("gateway server sessions", () => {
           {
             sessionId?: string;
             authProfileId?: string;
-            extraSystemPromptHash?: string;
-            mcpConfigHash?: string;
+            previousSessionIds?: string[];
           }
         >;
         cliSessionIds?: Record<string, string>;
@@ -1729,7 +1727,6 @@ describe("gateway server sessions", () => {
       "claude-cli": {
         sessionId: "cli-session-123",
         authProfileId: "anthropic:work",
-        extraSystemPromptHash: "prompt-hash",
       },
     });
     expect(reset.payload?.entry.cliSessionIds).toEqual({
@@ -1785,8 +1782,7 @@ describe("gateway server sessions", () => {
           {
             sessionId?: string;
             authProfileId?: string;
-            extraSystemPromptHash?: string;
-            mcpConfigHash?: string;
+            previousSessionIds?: string[];
           }
         >;
         cliSessionIds?: Record<string, string>;
@@ -1837,7 +1833,6 @@ describe("gateway server sessions", () => {
       "claude-cli": {
         sessionId: "cli-session-123",
         authProfileId: "anthropic:work",
-        extraSystemPromptHash: "prompt-hash",
       },
     });
     expect(store["agent:main:subagent:child"]?.cliSessionIds).toEqual({

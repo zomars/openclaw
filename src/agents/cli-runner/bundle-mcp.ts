@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,15 +19,6 @@ import {
 type PreparedCliBundleMcpConfig = {
   backend: CliBackendConfig;
   cleanup?: () => Promise<void>;
-  mcpConfigHash?: string;
-  /**
-   * SHA-256 of the raw merged MCP config without port canonicalization.
-   * Used to accept CLI session bindings persisted before the canonicalization
-   * fix landed — those bindings stored a hash that embedded the literal
-   * loopback port. On the first post-upgrade turn the binding is rewritten
-   * with the canonical hash, so this compatibility path decays naturally.
-   */
-  legacyMcpConfigHash?: string;
   env?: Record<string, string>;
 };
 
@@ -43,49 +33,6 @@ async function readExternalMcpConfig(configPath: string): Promise<BundleMcpConfi
   } catch {
     return { mcpServers: {} };
   }
-}
-
-/**
- * Strip the port from an http(s) URL so session-identity hashes stay stable
- * across gateway restarts that re-bind the loopback MCP bridge to a new
- * ephemeral port. Non-URL strings and non-http schemes are returned as-is.
- */
-function stripPortFromHttpUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return value;
-    }
-    if (parsed.port === "") {
-      return value;
-    }
-    parsed.port = "";
-    return parsed.toString();
-  } catch {
-    return value;
-  }
-}
-
-/**
- * Canonicalize the gateway-managed `additionalConfig` overlay for
- * session-identity hashing. Strips ports from http(s) URLs on each server
- * entry (the loopback MCP bridge binds to an OS-assigned ephemeral port on
- * every gateway start), while preserving everything else — server names,
- * types, headers, stdio command/args/env. Applied *only* to overlay servers,
- * never to user-authored plugin MCP endpoints; see
- * `prepareCliBundleMcpConfig` for the full hash-source construction.
- */
-function canonicalizeAdditionalConfigForHash(config: BundleMcpConfig): BundleMcpConfig {
-  const canonicalServers: Record<string, BundleMcpServerConfig> = {};
-  for (const [serverName, server] of Object.entries(config.mcpServers)) {
-    const canonicalServer: BundleMcpServerConfig = { ...server };
-    const url = canonicalServer.url;
-    if (typeof url === "string") {
-      canonicalServer.url = stripPortFromHttpUrl(url);
-    }
-    canonicalServers[serverName] = canonicalServer;
-  }
-  return { mcpServers: canonicalServers };
 }
 
 async function readJsonObject(filePath: string): Promise<Record<string, unknown>> {
@@ -347,17 +294,9 @@ async function prepareModeSpecificBundleMcpConfig(params: {
   mode: CliBundleMcpMode;
   backend: CliBackendConfig;
   mergedConfig: BundleMcpConfig;
-  hashSource?: BundleMcpConfig;
   env?: Record<string, string>;
 }): Promise<PreparedCliBundleMcpConfig> {
   const serializedConfig = `${JSON.stringify(params.mergedConfig, null, 2)}\n`;
-  const serializedHashSource = `${JSON.stringify(params.hashSource ?? params.mergedConfig, null, 2)}\n`;
-  const mcpConfigHash = crypto.createHash("sha256").update(serializedHashSource).digest("hex");
-  // Legacy hash over the raw (non-canonicalized) merged config. Matches what
-  // pre-fix gateway builds persisted in CLI session bindings, so bindings
-  // written by the old code are still accepted on the first post-upgrade
-  // turn and get rewritten with the canonical hash afterwards.
-  const legacyMcpConfigHash = crypto.createHash("sha256").update(serializedConfig).digest("hex");
 
   if (params.mode === "codex-config-overrides") {
     return {
@@ -369,8 +308,6 @@ async function prepareModeSpecificBundleMcpConfig(params: {
           params.mergedConfig,
         ),
       },
-      mcpConfigHash,
-      legacyMcpConfigHash,
       env: params.env,
     };
   }
@@ -379,8 +316,6 @@ async function prepareModeSpecificBundleMcpConfig(params: {
     const settings = await writeGeminiSystemSettings(params.mergedConfig, params.env);
     return {
       backend: params.backend,
-      mcpConfigHash,
-      legacyMcpConfigHash,
       env: settings.env,
       cleanup: settings.cleanup,
     };
@@ -398,8 +333,6 @@ async function prepareModeSpecificBundleMcpConfig(params: {
         mcpConfigPath,
       ),
     },
-    mcpConfigHash,
-    legacyMcpConfigHash,
     env: params.env,
     cleanup: async () => {
       await fs.rm(tempDir, { recursive: true, force: true });
@@ -446,38 +379,14 @@ export async function prepareCliBundleMcpConfig(params: {
     params.warn?.(`bundle MCP skipped for ${diagnostic.pluginId}: ${diagnostic.message}`);
   }
   mergedConfig = applyMergePatch(mergedConfig, bundleConfig.config) as BundleMcpConfig;
-  // Snapshot the user-authored merge result *before* layering the gateway
-  // overlay. User/plugin MCP server URLs must be hashed verbatim — moving a
-  // real plugin endpoint from host:1234 to host:5678 is a real tool-surface
-  // change that should invalidate the stored CLI session.
-  const userAuthoredMerged: BundleMcpConfig = {
-    mcpServers: { ...mergedConfig.mcpServers },
-  };
   if (params.additionalConfig) {
     mergedConfig = applyMergePatch(mergedConfig, params.additionalConfig) as BundleMcpConfig;
   }
-
-  // The hash source layers the gateway overlay on top of the user-authored
-  // merge, but port-canonicalized so gateway restarts that re-bind the
-  // loopback MCP bridge to a new ephemeral port don't invalidate sessions.
-  // The loopback's presence/absence and its non-ephemeral identity (server
-  // name, type, headers) *do* contribute to the hash, so a session bound
-  // while the bridge was up is still invalidated if the next run has no
-  // bridge (`startGatewayEarlyRuntime` catches loopback startup failures
-  // and continues), and any change to overlay headers still flips the hash.
-  // The on-disk mcp.json / CLI args still use the live port.
-  const hashSource = params.additionalConfig
-    ? (applyMergePatch(
-        userAuthoredMerged,
-        canonicalizeAdditionalConfigForHash(params.additionalConfig),
-      ) as BundleMcpConfig)
-    : userAuthoredMerged;
 
   return await prepareModeSpecificBundleMcpConfig({
     mode,
     backend: params.backend,
     mergedConfig,
-    hashSource,
     env: params.env,
   });
 }
