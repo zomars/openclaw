@@ -214,7 +214,15 @@ describe("agentCommand CLI provider handling", () => {
     }
   });
 
-  it("clears stale Claude CLI legacy session IDs before retrying after session expiration", async () => {
+  it("propagates a Claude CLI session_expired error without wiping the stored binding", async () => {
+    // Contract: when `runCliAgent` throws with `reason: "session_expired"`,
+    // `attempt-execution.ts` no longer catches it, clears the binding, and
+    // retries with a fresh session. That path was the single biggest
+    // source of silent conversation-memory loss — any transient or
+    // misclassified error carrying "session expired"-shaped text wiped
+    // the valid stored sessionId forever. Now the error propagates, the
+    // binding is preserved untouched, and the operator decides whether
+    // to reset the session explicitly.
     vi.mocked(modelSelectionModule.isCliProvider).mockImplementation(
       (provider) => provider.trim().toLowerCase() === "claude-cli",
     );
@@ -228,8 +236,8 @@ describe("agentCommand CLI provider handling", () => {
             updatedAt: Date.now(),
             providerOverride: "claude-cli",
             modelOverride: "opus",
-            cliSessionIds: { "claude-cli": "stale-cli-session" },
-            claudeCliSessionId: "stale-legacy-session",
+            cliSessionIds: { "claude-cli": "stable-cli-session" },
+            claudeCliSessionId: "stable-cli-session",
           },
         });
 
@@ -238,37 +246,34 @@ describe("agentCommand CLI provider handling", () => {
           models: { "claude-cli/opus": {} },
         });
 
-        runCliAgentSpy
-          .mockRejectedValueOnce(
-            new FailoverError("session expired", {
-              reason: "session_expired",
-              provider: "claude-cli",
-              model: "opus",
-              status: 410,
-            }),
-          )
-          .mockRejectedValue(new Error("retry failed"));
-
-        await expect(agentCommand({ message: "hi", sessionKey }, runtime)).rejects.toThrow(
-          "retry failed",
+        runCliAgentSpy.mockRejectedValueOnce(
+          new FailoverError("session expired", {
+            reason: "session_expired",
+            provider: "claude-cli",
+            model: "opus",
+            status: 410,
+          }),
         );
 
-        expect(runCliAgentSpy).toHaveBeenCalledTimes(2);
+        await expect(agentCommand({ message: "hi", sessionKey }, runtime)).rejects.toThrow(
+          "session expired",
+        );
+
+        // Runner is invoked exactly once — no fresh-session retry.
+        expect(runCliAgentSpy).toHaveBeenCalledTimes(1);
         const firstCall = runCliAgentSpy.mock.calls[0]?.[0] as
           | { cliSessionId?: string }
           | undefined;
-        const secondCall = runCliAgentSpy.mock.calls[1]?.[0] as
-          | { cliSessionId?: string }
-          | undefined;
-        expect(firstCall?.cliSessionId).toBe("stale-cli-session");
-        expect(secondCall?.cliSessionId).toBeUndefined();
+        expect(firstCall?.cliSessionId).toBe("stable-cli-session");
 
+        // Binding is preserved on disk — the stored sessionId is still the
+        // original, recovery remains possible without scanning the filesystem.
         const saved = readSessionStore<{
           cliSessionIds?: Record<string, string>;
           claudeCliSessionId?: string;
         }>(store);
-        expect(saved[sessionKey]?.cliSessionIds?.["claude-cli"]).toBeUndefined();
-        expect(saved[sessionKey]?.claudeCliSessionId).toBeUndefined();
+        expect(saved[sessionKey]?.cliSessionIds?.["claude-cli"]).toBe("stable-cli-session");
+        expect(saved[sessionKey]?.claudeCliSessionId).toBe("stable-cli-session");
       });
     } finally {
       vi.mocked(modelSelectionModule.isCliProvider).mockImplementation(() => false);

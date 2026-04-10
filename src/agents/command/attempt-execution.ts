@@ -12,14 +12,11 @@ import { loadConfig } from "../../config/config.js";
 import { mergeSessionEntry, type SessionEntry, updateSessionStore } from "../../config/sessions.js";
 import { resolveSessionTranscriptFile } from "../../config/sessions/transcript.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
-import { sanitizeForLog } from "../../terminal/ansi.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
 import { runCliAgent } from "../cli-runner.js";
-import { clearCliSession, getCliSessionBinding, setCliSessionBinding } from "../cli-session.js";
-import { FailoverError } from "../failover-error.js";
+import { getCliSessionBinding } from "../cli-session.js";
 import { formatAgentInternalEventsForPrompt } from "../internal-events.js";
 import { hasInternalRuntimeContext } from "../internal-runtime-context.js";
 import { isCliProvider } from "../model-selection.js";
@@ -28,8 +25,6 @@ import { runEmbeddedPiAgent } from "../pi-embedded.js";
 import { buildWorkspaceSkillSnapshot } from "../skills.js";
 import { resolveAgentRunContext } from "./run-context.js";
 import type { AgentCommandOpts } from "./types.js";
-
-const log = createSubsystemLogger("agents/agent-command");
 
 /** Maximum number of JSONL records to inspect before giving up. */
 const SESSION_FILE_MAX_RECORDS = 500;
@@ -375,66 +370,17 @@ export function runAgentAttempt(params: {
         messageProvider: params.messageChannel,
         agentAccountId: params.runContext.accountId,
       });
-    return runCliWithSession(cliSessionBinding?.sessionId).catch(async (err) => {
-      if (
-        err instanceof FailoverError &&
-        err.reason === "session_expired" &&
-        cliSessionBinding?.sessionId &&
-        params.sessionKey &&
-        params.sessionStore &&
-        params.storePath
-      ) {
-        log.warn(
-          `CLI session expired, clearing from session store: provider=${sanitizeForLog(params.providerOverride)} sessionKey=${params.sessionKey}`,
-        );
-
-        const entry = params.sessionStore[params.sessionKey];
-        if (entry) {
-          const updatedEntry = { ...entry };
-          clearCliSession(updatedEntry, params.providerOverride);
-          updatedEntry.updatedAt = Date.now();
-
-          await persistSessionEntry({
-            sessionStore: params.sessionStore,
-            sessionKey: params.sessionKey,
-            storePath: params.storePath,
-            entry: updatedEntry,
-            clearedFields: ["cliSessionBindings", "cliSessionIds", "claudeCliSessionId"],
-          });
-
-          params.sessionEntry = updatedEntry;
-        }
-
-        return runCliWithSession(undefined).then(async (result) => {
-          if (
-            result.meta.agentMeta?.cliSessionBinding?.sessionId &&
-            params.sessionKey &&
-            params.sessionStore &&
-            params.storePath
-          ) {
-            const entry = params.sessionStore[params.sessionKey];
-            if (entry) {
-              const updatedEntry = { ...entry };
-              setCliSessionBinding(
-                updatedEntry,
-                params.providerOverride,
-                result.meta.agentMeta.cliSessionBinding,
-              );
-              updatedEntry.updatedAt = Date.now();
-
-              await persistSessionEntry({
-                sessionStore: params.sessionStore,
-                sessionKey: params.sessionKey,
-                storePath: params.storePath,
-                entry: updatedEntry,
-              });
-            }
-          }
-          return result;
-        });
-      }
-      throw err;
-    });
+    // No `session_expired` fallback here either. The previous version
+    // called `clearCliSession` on a FailoverError with `reason ===
+    // "session_expired"`, wiping the entire CliSessionBinding
+    // (including any historical sessionIds) before retrying fresh. It
+    // was the last of several silent-amnesia code paths. Trust the
+    // stored sessionId: if `claude --resume` genuinely fails, the
+    // error propagates and the operator can decide whether to clear
+    // the binding explicitly. See `resolveCliSessionReuse` and
+    // `setCliSessionBinding` in cli-session.ts for the surrounding
+    // contract.
+    return runCliWithSession(cliSessionBinding?.sessionId);
   }
 
   return runEmbeddedPiAgent({

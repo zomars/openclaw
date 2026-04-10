@@ -42,7 +42,17 @@ export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPi
     };
   };
 
-  // Try with the provided CLI session ID first
+  // Always try with the stored sessionId. No automatic "session_expired"
+  // fallback to a fresh session: the previous fallback was the single
+  // biggest source of silent conversation-memory loss — it was triggered
+  // by any error message containing "session not found" / "session
+  // expired" / etc., which in practice included many transient and
+  // misclassified errors, and it threw away a perfectly valid stored
+  // sessionId that `claude --resume` would have loaded fine on the next
+  // turn. If a resume genuinely fails with an unrecoverable error, let
+  // the error propagate; the operator sees it once and can decide
+  // whether to reset the binding explicitly. Fail-open on session
+  // continuity beats fail-closed amnesia.
   try {
     try {
       const output = await executePreparedCliRun(context, context.reusableCliSession.sessionId);
@@ -50,18 +60,6 @@ export async function runCliAgent(params: RunCliAgentParams): Promise<EmbeddedPi
       return buildCliRunResult({ output, effectiveCliSessionId });
     } catch (err) {
       if (isFailoverError(err)) {
-        const retryableSessionId = context.reusableCliSession.sessionId ?? params.cliSessionId;
-        // Check if this is a session expired error and we have a session to clear
-        if (err.reason === "session_expired" && retryableSessionId && params.sessionKey) {
-          // Clear the expired session ID from the session entry
-          // This requires access to the session store, which we don't have here
-          // We'll need to modify the caller to handle this case
-
-          // For now, retry without the session ID to create a new session
-          const output = await executePreparedCliRun(context, undefined);
-          const effectiveCliSessionId = output.sessionId;
-          return buildCliRunResult({ output, effectiveCliSessionId });
-        }
         throw err;
       }
       const message = formatErrorMessage(err);

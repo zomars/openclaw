@@ -139,7 +139,17 @@ describe("runCliAgent reliability", () => {
     ).rejects.toThrow("exceeded timeout");
   });
 
-  it("rethrows the retry failure when session-expired recovery retry also fails", async () => {
+  it("propagates a session_expired error without retrying on a fresh session", async () => {
+    // Contract: the runner no longer auto-retries with a fresh session on
+    // "session expired" errors. That auto-retry was the single biggest
+    // source of silent conversation-memory loss — it routinely wiped
+    // valid stored sessionIds on false-positive error classifications
+    // (transient network errors, misclassified streams, etc.) and there
+    // is no way to distinguish a legitimately expired session from a
+    // flaky turn without actually trying to resume twice. Trust the
+    // stored sessionId; let the error propagate so the operator can
+    // decide whether to reset explicitly. See cli-runner.ts and
+    // attempt-execution.ts for the surrounding deletion.
     const runCliAgent = await setupCliRunnerTestModule();
     supervisorSpawnMock.mockResolvedValueOnce(
       createManagedRun({
@@ -149,18 +159,6 @@ describe("runCliAgent reliability", () => {
         durationMs: 150,
         stdout: "",
         stderr: "session expired",
-        timedOut: false,
-        noOutputTimedOut: false,
-      }),
-    );
-    supervisorSpawnMock.mockResolvedValueOnce(
-      createManagedRun({
-        reason: "exit",
-        exitCode: 1,
-        exitSignal: null,
-        durationMs: 150,
-        stdout: "",
-        stderr: "rate limit exceeded",
         timedOut: false,
         noOutputTimedOut: false,
       }),
@@ -180,9 +178,10 @@ describe("runCliAgent reliability", () => {
         runId: "run-retry-failure",
         cliSessionId: "thread-123",
       }),
-    ).rejects.toThrow("rate limit exceeded");
+    ).rejects.toThrow("session expired");
 
-    expect(supervisorSpawnMock).toHaveBeenCalledTimes(2);
+    // Exactly one spawn — the runner does NOT retry on a fresh session.
+    expect(supervisorSpawnMock).toHaveBeenCalledTimes(1);
   });
 });
 
