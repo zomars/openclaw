@@ -49,7 +49,6 @@ export type CanonicalInboundMessageHookContext = {
   isGroup: boolean;
   groupId?: string;
   isAccountOwnerMessage?: boolean;
-  fromMe?: boolean;
   ctwaClid?: string;
   topicName?: string;
 };
