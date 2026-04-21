@@ -11,6 +11,7 @@ import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agen
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import {
   inferUniqueProviderFromConfiguredModels,
+  normalizeStoredOverrideModel,
   parseModelRef,
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
@@ -23,22 +24,21 @@ import {
   listSubagentRunsForController,
   resolveSubagentSessionStatus,
 } from "../agents/subagent-registry-read.js";
-import { type OpenClawConfig, loadConfig } from "../config/config.js";
+import { loadConfig } from "../config/config.js";
 import { resolveAgentModelFallbackValues } from "../config/model-input.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
   buildGroupDisplayName,
-  canonicalizeMainSessionAlias,
   loadSessionStore,
   resolveAllAgentSessionStoreTargetsSync,
   resolveAgentMainSessionKey,
   resolveFreshSessionTotalTokens,
-  resolveMainSessionKey,
   resolveStorePath,
   type SessionEntry,
   type SessionStoreTarget,
   type SessionScope,
 } from "../config/sessions.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
 import {
   normalizeAgentId,
@@ -59,8 +59,14 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "../shared/string-coerce.js";
-import { normalizeSessionDeliveryFields } from "../utils/delivery-context.js";
+import { normalizeSessionDeliveryFields } from "../utils/delivery-context.shared.js";
 import { estimateUsageCost, resolveModelCostConfig } from "../utils/usage-format.js";
+import {
+  canonicalizeSessionKeyForAgent,
+  canonicalizeSpawnedByForAgent,
+  resolveSessionStoreAgentId,
+  resolveSessionStoreKey,
+} from "./session-store-key.js";
 import {
   readLatestSessionUsageFromTranscript,
   readSessionTitleFieldsFromTranscript,
@@ -85,6 +91,7 @@ export {
   readSessionMessages,
   resolveSessionTranscriptCandidates,
 } from "./session-utils.fs.js";
+export { canonicalizeSpawnedByForAgent, resolveSessionStoreKey } from "./session-store-key.js";
 export type {
   GatewayAgentRow,
   GatewaySessionRow,
@@ -113,7 +120,7 @@ function resolveIdentityAvatarUrl(
   if (!avatar) {
     return undefined;
   }
-  const trimmed = avatar.trim();
+  const trimmed = normalizeOptionalString(avatar) ?? "";
   if (!trimmed) {
     return undefined;
   }
@@ -183,12 +190,12 @@ export function deriveSessionTitle(
     return undefined;
   }
 
-  if (entry.displayName?.trim()) {
-    return entry.displayName.trim();
+  if (normalizeOptionalString(entry.displayName)) {
+    return normalizeOptionalString(entry.displayName);
   }
 
-  if (entry.subject?.trim()) {
-    return entry.subject.trim();
+  if (normalizeOptionalString(entry.subject)) {
+    return normalizeOptionalString(entry.subject);
   }
 
   if (firstUserMessage?.trim()) {
@@ -284,13 +291,14 @@ function resolveChildSessionKeys(
 ): string[] | undefined {
   const childSessionKeys = new Set<string>();
   for (const entry of listSubagentRunsForController(controllerSessionKey)) {
-    const childSessionKey = entry.childSessionKey?.trim();
+    const childSessionKey = normalizeOptionalString(entry.childSessionKey);
     if (!childSessionKey) {
       continue;
     }
     const latest = getSessionDisplaySubagentRunByChildSessionKey(childSessionKey);
     const latestControllerSessionKey =
-      latest?.controllerSessionKey?.trim() || latest?.requesterSessionKey?.trim();
+      normalizeOptionalString(latest?.controllerSessionKey) ||
+      normalizeOptionalString(latest?.requesterSessionKey);
     if (latestControllerSessionKey !== controllerSessionKey) {
       continue;
     }
@@ -300,15 +308,16 @@ function resolveChildSessionKeys(
     if (!entry || key === controllerSessionKey) {
       continue;
     }
-    const spawnedBy = entry.spawnedBy?.trim();
-    const parentSessionKey = entry.parentSessionKey?.trim();
+    const spawnedBy = normalizeOptionalString(entry.spawnedBy);
+    const parentSessionKey = normalizeOptionalString(entry.parentSessionKey);
     if (spawnedBy !== controllerSessionKey && parentSessionKey !== controllerSessionKey) {
       continue;
     }
     const latest = getSessionDisplaySubagentRunByChildSessionKey(key);
     if (latest) {
       const latestControllerSessionKey =
-        latest.controllerSessionKey?.trim() || latest.requesterSessionKey?.trim();
+        normalizeOptionalString(latest.controllerSessionKey) ||
+        normalizeOptionalString(latest.requesterSessionKey);
       if (latestControllerSessionKey !== controllerSessionKey) {
         continue;
       }
@@ -388,13 +397,13 @@ export function loadSessionEntry(sessionKey: string) {
   const agentId = resolveSessionStoreAgentId(cfg, canonicalKey);
   const { storePath, store } = resolveGatewaySessionStoreLookup({
     cfg,
-    key: sessionKey.trim(),
+    key: normalizeOptionalString(sessionKey) ?? "",
     canonicalKey,
     agentId,
   });
   const target = resolveGatewaySessionStoreTarget({
     cfg,
-    key: sessionKey.trim(),
+    key: normalizeOptionalString(sessionKey) ?? "",
     store,
   });
   const freshestMatch = resolveFreshestSessionStoreMatchFromStoreKeys(store, target.storeKeys);
@@ -434,7 +443,7 @@ function findFreshestStoreMatch(
 ): { entry: SessionEntry; key: string } | undefined {
   const matches = new Map<string, { entry: SessionEntry; key: string }>();
   for (const candidate of candidates) {
-    const trimmed = candidate.trim();
+    const trimmed = normalizeOptionalString(candidate) ?? "";
     if (!trimmed) {
       continue;
     }
@@ -486,7 +495,7 @@ export function pruneLegacyStoreKeys(params: {
 }) {
   const keysToDelete = new Set<string>();
   for (const candidate of params.candidates) {
-    const trimmed = String(candidate ?? "").trim();
+    const trimmed = normalizeOptionalString(candidate ?? "") ?? "";
     if (!trimmed) {
       continue;
     }
@@ -505,7 +514,7 @@ export function pruneLegacyStoreKeys(params: {
 }
 
 export function migrateAndPruneGatewaySessionStoreKey(params: {
-  cfg: ReturnType<typeof loadConfig>;
+  cfg: OpenClawConfig;
   key: string;
   store: Record<string, SessionEntry>;
 }) {
@@ -701,94 +710,6 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
   return { defaultId, mainKey, scope, agents };
 }
 
-function canonicalizeSessionKeyForAgent(agentId: string, key: string): string {
-  const lowered = normalizeLowercaseStringOrEmpty(key);
-  if (lowered === "global" || lowered === "unknown") {
-    return lowered;
-  }
-  if (lowered.startsWith("agent:")) {
-    return lowered;
-  }
-  return `agent:${normalizeAgentId(agentId)}:${lowered}`;
-}
-
-function resolveDefaultStoreAgentId(cfg: OpenClawConfig): string {
-  return normalizeAgentId(resolveDefaultAgentId(cfg));
-}
-
-export function resolveSessionStoreKey(params: {
-  cfg: OpenClawConfig;
-  sessionKey: string;
-}): string {
-  const raw = (params.sessionKey ?? "").trim();
-  if (!raw) {
-    return raw;
-  }
-  const rawLower = normalizeLowercaseStringOrEmpty(raw);
-  if (rawLower === "global" || rawLower === "unknown") {
-    return rawLower;
-  }
-
-  const parsed = parseAgentSessionKey(raw);
-  if (parsed) {
-    const agentId = normalizeAgentId(parsed.agentId);
-    const lowered = normalizeLowercaseStringOrEmpty(raw);
-    const canonical = canonicalizeMainSessionAlias({
-      cfg: params.cfg,
-      agentId,
-      sessionKey: lowered,
-    });
-    if (canonical !== lowered) {
-      return canonical;
-    }
-    return lowered;
-  }
-
-  const lowered = normalizeLowercaseStringOrEmpty(raw);
-  const rawMainKey = normalizeMainKey(params.cfg.session?.mainKey);
-  if (lowered === "main" || lowered === rawMainKey) {
-    return resolveMainSessionKey(params.cfg);
-  }
-  const agentId = resolveDefaultStoreAgentId(params.cfg);
-  return canonicalizeSessionKeyForAgent(agentId, lowered);
-}
-
-function resolveSessionStoreAgentId(cfg: OpenClawConfig, canonicalKey: string): string {
-  if (canonicalKey === "global" || canonicalKey === "unknown") {
-    return resolveDefaultStoreAgentId(cfg);
-  }
-  const parsed = parseAgentSessionKey(canonicalKey);
-  if (parsed?.agentId) {
-    return normalizeAgentId(parsed.agentId);
-  }
-  return resolveDefaultStoreAgentId(cfg);
-}
-
-export function canonicalizeSpawnedByForAgent(
-  cfg: OpenClawConfig,
-  agentId: string,
-  spawnedBy?: string,
-): string | undefined {
-  const raw = spawnedBy?.trim();
-  if (!raw) {
-    return undefined;
-  }
-  const lower = normalizeLowercaseStringOrEmpty(raw);
-  if (lower === "global" || lower === "unknown") {
-    return lower;
-  }
-  let result: string;
-  if (lower.startsWith("agent:")) {
-    result = lower;
-  } else {
-    result = `agent:${normalizeAgentId(agentId)}:${lower}`;
-  }
-  // Resolve main-alias references (e.g. agent:ops:main → configured main key).
-  const parsed = parseAgentSessionKey(result);
-  const resolvedAgent = parsed?.agentId ? normalizeAgentId(parsed.agentId) : agentId;
-  return canonicalizeMainSessionAlias({ cfg, agentId: resolvedAgent, sessionKey: result });
-}
-
 function buildGatewaySessionStoreScanTargets(params: {
   cfg: OpenClawConfig;
   key: string;
@@ -895,7 +816,7 @@ export function resolveGatewaySessionStoreTarget(params: {
   canonicalKey: string;
   storeKeys: string[];
 } {
-  const key = params.key.trim();
+  const key = normalizeOptionalString(params.key) ?? "";
   const canonicalKey = resolveSessionStoreKey({
     cfg: params.cfg,
     sessionKey: key,
@@ -1050,12 +971,17 @@ export function resolveSessionModelRef(
         defaultModel: DEFAULT_MODEL,
       });
 
+  const normalizedOverride = normalizeStoredOverrideModel({
+    providerOverride: entry?.providerOverride,
+    modelOverride: entry?.modelOverride,
+  });
+
   const persisted = resolvePersistedSelectedModelRef({
     defaultProvider: resolved.provider || DEFAULT_PROVIDER,
     runtimeProvider: entry?.modelProvider,
     runtimeModel: entry?.model,
-    overrideProvider: entry?.providerOverride,
-    overrideModel: entry?.modelOverride,
+    overrideProvider: normalizedOverride.providerOverride,
+    overrideModel: normalizedOverride.modelOverride,
   });
   if (persisted) {
     return persisted;
@@ -1223,7 +1149,8 @@ export function buildGatewaySessionRow(params: {
   const sessionAgentId = normalizeAgentId(parsedAgent?.agentId ?? resolveDefaultAgentId(cfg));
   const subagentRun = getSessionDisplaySubagentRunByChildSessionKey(key);
   const subagentOwner =
-    subagentRun?.controllerSessionKey?.trim() || subagentRun?.requesterSessionKey?.trim();
+    normalizeOptionalString(subagentRun?.controllerSessionKey) ||
+    normalizeOptionalString(subagentRun?.requesterSessionKey);
   const subagentStatus = subagentRun ? resolveSubagentSessionStatus(subagentRun) : undefined;
   const subagentStartedAt = subagentRun ? getSubagentSessionStartedAt(subagentRun) : undefined;
   const subagentEndedAt = subagentRun ? subagentRun.endedAt : undefined;
@@ -1349,6 +1276,7 @@ export function buildGatewaySessionRow(params: {
     thinkingLevel: entry?.thinkingLevel,
     fastMode: entry?.fastMode,
     verboseLevel: entry?.verboseLevel,
+    traceLevel: entry?.traceLevel,
     reasoningLevel: entry?.reasoningLevel,
     elevatedLevel: entry?.elevatedLevel,
     sendPolicy: entry?.sendPolicy,
@@ -1411,7 +1339,7 @@ export function listSessionsFromStore(params: {
   const includeDerivedTitles = opts.includeDerivedTitles === true;
   const includeLastMessage = opts.includeLastMessage === true;
   const spawnedBy = typeof opts.spawnedBy === "string" ? opts.spawnedBy : "";
-  const label = typeof opts.label === "string" ? opts.label.trim() : "";
+  const label = normalizeOptionalString(opts.label) ?? "";
   const agentId = typeof opts.agentId === "string" ? normalizeAgentId(opts.agentId) : "";
   const search = normalizeLowercaseStringOrEmpty(opts.search);
   const activeMinutes =
@@ -1452,7 +1380,8 @@ export function listSessionsFromStore(params: {
       const latest = getSessionDisplaySubagentRunByChildSessionKey(key);
       if (latest) {
         const latestControllerSessionKey =
-          latest.controllerSessionKey?.trim() || latest.requesterSessionKey?.trim();
+          normalizeOptionalString(latest.controllerSessionKey) ||
+          normalizeOptionalString(latest.requesterSessionKey);
         return latestControllerSessionKey === spawnedBy;
       }
       return entry?.spawnedBy === spawnedBy || entry?.parentSessionKey === spawnedBy;

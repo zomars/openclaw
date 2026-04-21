@@ -12,8 +12,11 @@ import {
   resolveEnvApiKey,
   resolveUsableCustomProviderApiKey,
 } from "../../agents/model-auth.js";
-import type { OpenClawConfig } from "../../config/config.js";
-import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "../../shared/string-coerce.js";
 import { shortenHomePath } from "../../utils.js";
 import { maskApiKey } from "./list.format.js";
 import type { ProviderAuthOverview } from "./list.types.js";
@@ -29,7 +32,7 @@ function formatProfileSecretLabel(params: {
   ref: { source: string; id: string } | undefined;
   kind: "api-key" | "token";
 }): string {
-  const value = typeof params.value === "string" ? params.value.trim() : "";
+  const value = normalizeOptionalString(params.value) ?? "";
   if (value) {
     const display = formatMarkerOrSecret(value);
     return params.kind === "token" ? `token:${display}` : display;

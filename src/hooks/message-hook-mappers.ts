@@ -1,13 +1,13 @@
 import type { FinalizedMsgContext } from "../auto-reply/templating.js";
 import { getChannelPlugin, normalizeChannelId } from "../channels/plugins/index.js";
-import type { OpenClawConfig } from "../config/config.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   PluginHookInboundClaimContext,
   PluginHookInboundClaimEvent,
   PluginHookMessageContext,
   PluginHookMessageReceivedEvent,
   PluginHookMessageSentEvent,
-} from "../plugins/types.js";
+} from "../plugins/hook-message.types.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -51,6 +51,7 @@ export type CanonicalInboundMessageHookContext = {
   isAccountOwnerMessage?: boolean;
   fromMe?: boolean;
   ctwaClid?: string;
+  topicName?: string;
 };
 
 export type CanonicalSentMessageHookContext = {
@@ -136,6 +137,7 @@ export function deriveInboundMessageHookContext(
     groupId: isGroup ? conversationId : undefined,
     isAccountOwnerMessage: ctx.IsAccountOwnerMessage,
     ctwaClid: ctx.CtwaClid,
+    topicName: ctx.TopicName,
   };
 }
 
@@ -271,6 +273,7 @@ export function toPluginInboundClaimEvent(
       guildId: canonical.guildId,
       channelName: canonical.channelName,
       groupId: canonical.groupId,
+      topicName: canonical.topicName,
     },
   };
 }
@@ -298,6 +301,7 @@ export function toPluginMessageReceivedEvent(
       channelName: canonical.channelName,
       sentByAccountOwner: canonical.isAccountOwnerMessage,
       ctwaClid: canonical.ctwaClid,
+      topicName: canonical.topicName,
     },
   };
 }
@@ -337,6 +341,7 @@ export function toInternalMessageReceivedContext(
       channelName: canonical.channelName,
       sentByAccountOwner: canonical.isAccountOwnerMessage,
       ctwaClid: canonical.ctwaClid,
+      topicName: canonical.topicName,
     },
   };
 }

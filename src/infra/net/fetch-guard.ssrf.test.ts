@@ -81,6 +81,15 @@ async function expectRedirectFailure(params: {
 }
 
 describe("fetchWithSsrFGuard hardening", () => {
+  const PROXY_ENV_KEYS = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+  ] as const;
+
   type LookupFn = NonNullable<Parameters<typeof fetchWithSsrFGuard>[0]["lookupFn"]>;
   const CROSS_ORIGIN_REDIRECT_STRIPPED_HEADERS = [
     "authorization",
@@ -100,10 +109,17 @@ describe("fetchWithSsrFGuard hardening", () => {
   const createPublicLookup = (): LookupFn =>
     vi.fn(async () => [{ address: "93.184.216.34", family: 4 }]) as unknown as LookupFn;
 
+  function clearProxyEnv(): void {
+    for (const key of PROXY_ENV_KEYS) {
+      vi.stubEnv(key, "");
+    }
+  }
+
   async function runProxyModeDispatcherTest(params: {
     mode: (typeof GUARDED_FETCH_MODE)[keyof typeof GUARDED_FETCH_MODE];
     expectEnvProxy: boolean;
   }): Promise<void> {
+    clearProxyEnv();
     vi.stubEnv("HTTP_PROXY", "http://127.0.0.1:7890");
     (globalThis as Record<string, unknown>)[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
       Agent: agentCtor,
@@ -1002,6 +1018,75 @@ describe("fetchWithSsrFGuard hardening", () => {
     await result.release();
   });
 
+  it("skips target DNS pinning in trusted explicit-proxy mode after hostname-policy checks", async () => {
+    (globalThis as Record<string, unknown>)[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: agentCtor,
+      EnvHttpProxyAgent: envHttpProxyAgentCtor,
+      ProxyAgent: proxyAgentCtor,
+      fetch: vi.fn(async () => okResponse()),
+    };
+    const lookupFn: LookupFn = vi.fn(async (hostname: string) => {
+      if (hostname === "localhost") {
+        return [{ address: "127.0.0.1", family: 4 }];
+      }
+      throw new Error(`unexpected target DNS lookup for ${hostname}`);
+    }) as unknown as LookupFn;
+    const fetchImpl = vi.fn(async () => okResponse());
+
+    const result = await fetchWithSsrFGuard({
+      url: "https://api.telegram.org/file/bot123/photos/test.jpg",
+      fetchImpl,
+      lookupFn,
+      mode: GUARDED_FETCH_MODE.TRUSTED_EXPLICIT_PROXY,
+      policy: { hostnameAllowlist: ["api.telegram.org"] },
+      dispatcherPolicy: {
+        mode: "explicit-proxy",
+        proxyUrl: "http://localhost:6152",
+        allowPrivateProxy: true,
+      },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(lookupFn).toHaveBeenCalledOnce();
+    expect(lookupFn).toHaveBeenCalledWith("localhost", { all: true });
+    await result.release();
+  });
+
+  it("still blocks off-allowlist targets in trusted explicit-proxy mode", async () => {
+    (globalThis as Record<string, unknown>)[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
+      Agent: agentCtor,
+      EnvHttpProxyAgent: envHttpProxyAgentCtor,
+      ProxyAgent: proxyAgentCtor,
+      fetch: vi.fn(async () => okResponse()),
+    };
+    const lookupFn: LookupFn = vi.fn(async (hostname: string) => {
+      if (hostname === "localhost") {
+        return [{ address: "127.0.0.1", family: 4 }];
+      }
+      throw new Error(`unexpected target DNS lookup for ${hostname}`);
+    }) as unknown as LookupFn;
+    const fetchImpl = vi.fn(async () => okResponse());
+
+    await expect(
+      fetchWithSsrFGuard({
+        url: "https://cdn.telegram.org/file/bot123/photos/test.jpg",
+        fetchImpl,
+        lookupFn,
+        mode: GUARDED_FETCH_MODE.TRUSTED_EXPLICIT_PROXY,
+        policy: { hostnameAllowlist: ["api.telegram.org"] },
+        dispatcherPolicy: {
+          mode: "explicit-proxy",
+          proxyUrl: "http://localhost:6152",
+          allowPrivateProxy: true,
+        },
+      }),
+    ).rejects.toThrow(/allowlist|blocked/i);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(lookupFn).toHaveBeenCalledOnce();
+    expect(lookupFn).toHaveBeenCalledWith("localhost", { all: true });
+  });
+
   it("still blocks explicit proxy on localhost when allowPrivateProxy is false", async () => {
     (globalThis as Record<string, unknown>)[TEST_UNDICI_RUNTIME_DEPS_KEY] = {
       Agent: agentCtor,
@@ -1031,5 +1116,27 @@ describe("fetchWithSsrFGuard hardening", () => {
       }),
     ).rejects.toThrow(/blocked/i);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("falls back to DNS pinning in trusted proxy mode when no proxy env var is configured", async () => {
+    clearProxyEnv();
+    const lookupFn = createPublicLookup();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const requestInit = init as RequestInit & { dispatcher?: unknown };
+      expect(requestInit.dispatcher).toBeDefined();
+      expect(getDispatcherClassName(requestInit.dispatcher)).not.toBe("EnvHttpProxyAgent");
+      return okResponse();
+    });
+
+    const result = await fetchWithSsrFGuard({
+      url: "https://public.example/resource",
+      fetchImpl,
+      lookupFn,
+      mode: GUARDED_FETCH_MODE.TRUSTED_ENV_PROXY,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(lookupFn).toHaveBeenCalledOnce();
+    await result.release();
   });
 });

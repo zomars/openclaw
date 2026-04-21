@@ -313,7 +313,7 @@ export function registerCronEditCommand(cron: Command) {
               failureAlert.channel = normalizeOptionalLowercaseString(opts.failureAlertChannel);
             }
             if (hasFailureAlertTo) {
-              const to = String(opts.failureAlertTo).trim();
+              const to = normalizeOptionalString(opts.failureAlertTo) ?? "";
               failureAlert.to = to ? to : undefined;
             }
             if (hasFailureAlertCooldown) {
@@ -331,7 +331,7 @@ export function registerCronEditCommand(cron: Command) {
               failureAlert.mode = mode;
             }
             if (hasFailureAlertAccountId) {
-              const accountId = String(opts.failureAlertAccountId).trim();
+              const accountId = normalizeOptionalString(opts.failureAlertAccountId) ?? "";
               failureAlert.accountId = accountId ? accountId : undefined;
             }
             patch.failureAlert = failureAlert;

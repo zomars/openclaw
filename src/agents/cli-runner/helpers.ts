@@ -6,8 +6,8 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
-import type { OpenClawConfig } from "../../config/config.js";
 import type { CliBackendConfig } from "../../config/types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import { MAX_IMAGE_BYTES } from "../../media/constants.js";
 import { extensionForMime } from "../../media/mime.js";
@@ -27,6 +27,7 @@ import { stripSystemPromptCacheBoundary } from "../system-prompt-cache-boundary.
 import { buildSystemPromptParams } from "../system-prompt-params.js";
 import { buildAgentSystemPrompt } from "../system-prompt.js";
 import { sanitizeImageBlocks } from "../tool-images.js";
+import { formatTomlConfigOverride } from "./toml-inline.js";
 export { buildCliSupervisorScopeKey, resolveCliNoOutputTimeoutMs } from "./reliability.js";
 
 const CLI_RUN_QUEUE = new KeyedAsyncQueue();
@@ -72,6 +73,7 @@ export function buildSystemPrompt(params: {
   docsPath?: string;
   tools: AgentTool[];
   contextFiles?: EmbeddedContextFile[];
+  skillsPrompt?: string;
   modelDisplay: string;
   agentId?: string;
   skillsPrompt?: string;
@@ -112,13 +114,13 @@ export function buildSystemPrompt(params: {
     runtimeInfo,
     toolNames: params.tools.map((tool) => tool.name),
     modelAliasLines: buildModelAliasLines(params.config),
+    skillsPrompt: params.skillsPrompt,
     userTimezone,
     userTime,
     userTimeFormat,
     contextFiles: params.contextFiles,
     ttsHint,
     memoryCitationsMode: params.config?.memory?.citations,
-    skillsPrompt: params.skillsPrompt,
   });
 }
 
@@ -155,7 +157,10 @@ export function resolveSystemPromptUsage(params: {
   if (when === "first" && !params.isNewSession) {
     return null;
   }
-  if (!params.backend.systemPromptArg?.trim()) {
+  if (
+    !params.backend.systemPromptArg?.trim() &&
+    !params.backend.systemPromptFileConfigKey?.trim()
+  ) {
     return null;
   }
   return systemPrompt;
@@ -282,6 +287,29 @@ export async function writeCliImages(params: {
   return { paths, cleanup };
 }
 
+export async function writeCliSystemPromptFile(params: {
+  backend: CliBackendConfig;
+  systemPrompt: string;
+}): Promise<{ filePath?: string; cleanup: () => Promise<void> }> {
+  if (!params.backend.systemPromptFileConfigKey?.trim()) {
+    return { cleanup: async () => {} };
+  }
+  const tempDir = await fs.mkdtemp(
+    path.join(resolvePreferredOpenClawTmpDir(), "openclaw-cli-system-prompt-"),
+  );
+  const filePath = path.join(tempDir, "system-prompt.md");
+  await fs.writeFile(filePath, stripSystemPromptCacheBoundary(params.systemPrompt), {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  return {
+    filePath,
+    cleanup: async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    },
+  };
+}
+
 export async function prepareCliPromptImagePayload(params: {
   backend: CliBackendConfig;
   prompt: string;
@@ -330,6 +358,7 @@ export function buildCliArgs(params: {
   modelId: string;
   sessionId?: string;
   systemPrompt?: string | null;
+  systemPromptFilePath?: string;
   imagePaths?: string[];
   promptArg?: string;
   useResume: boolean;
@@ -338,7 +367,20 @@ export function buildCliArgs(params: {
   if (params.backend.modelArg && params.modelId) {
     args.push(params.backend.modelArg, params.modelId);
   }
-  if (!params.useResume && params.systemPrompt && params.backend.systemPromptArg) {
+  if (
+    !params.useResume &&
+    params.systemPrompt &&
+    params.systemPromptFilePath &&
+    params.backend.systemPromptFileConfigKey
+  ) {
+    args.push(
+      params.backend.systemPromptFileConfigArg ?? "-c",
+      formatTomlConfigOverride(
+        params.backend.systemPromptFileConfigKey,
+        params.systemPromptFilePath,
+      ),
+    );
+  } else if (!params.useResume && params.systemPrompt && params.backend.systemPromptArg) {
     args.push(params.backend.systemPromptArg, stripSystemPromptCacheBoundary(params.systemPrompt));
   }
   if (!params.useResume && params.sessionId) {

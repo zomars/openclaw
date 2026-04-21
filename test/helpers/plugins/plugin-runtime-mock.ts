@@ -102,6 +102,10 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
         payloads: [],
         meta: {},
       }) as unknown as PluginRuntime["agent"]["runEmbeddedPiAgent"],
+      runEmbeddedAgent: vi.fn().mockResolvedValue({
+        payloads: [],
+        meta: {},
+      }) as unknown as PluginRuntime["agent"]["runEmbeddedAgent"],
       resolveAgentTimeoutMs: vi.fn(
         () => 30_000,
       ) as unknown as PluginRuntime["agent"]["resolveAgentTimeoutMs"],
@@ -395,6 +399,8 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
     taskFlow,
     modelAuth: {
       getApiKeyForModel: vi.fn() as unknown as PluginRuntime["modelAuth"]["getApiKeyForModel"],
+      getRuntimeAuthForModel:
+        vi.fn() as unknown as PluginRuntime["modelAuth"]["getRuntimeAuthForModel"],
       resolveApiKeyForProvider:
         vi.fn() as unknown as PluginRuntime["modelAuth"]["resolveApiKeyForProvider"],
     },

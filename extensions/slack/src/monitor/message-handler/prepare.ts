@@ -65,7 +65,7 @@ function resolveCachedMentionRegexes(
   ctx: SlackMonitorContext,
   agentId: string | undefined,
 ): RegExp[] {
-  const key = agentId?.trim() || "__default__";
+  const key = normalizeOptionalString(agentId) ?? "__default__";
   let byAgent = mentionRegexCache.get(ctx);
   if (!byAgent) {
     byAgent = new Map<string, RegExp[]>();
@@ -508,7 +508,7 @@ export async function prepareSlackMessage(params: {
     },
     policy: {
       isGroup: isRoom,
-      requireMention: Boolean(shouldRequireMention),
+      requireMention: shouldRequireMention,
       allowedImplicitMentionKinds: ctx.threadRequireExplicitMention ? [] : undefined,
       allowTextCommands,
       hasControlCommand: hasControlCommandInMessage,
@@ -576,7 +576,7 @@ export async function prepareSlackMessage(params: {
         isDirect: isDirectMessage,
         isGroup: isRoomish,
         isMentionableGroup: isRoom,
-        requireMention: Boolean(shouldRequireMention),
+        requireMention: shouldRequireMention,
         canDetectMention,
         effectiveWasMentioned,
         shouldBypassMention: mentionDecision.shouldBypassMention,

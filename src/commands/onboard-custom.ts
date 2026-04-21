@@ -1,14 +1,15 @@
 import { CONTEXT_WINDOW_HARD_MIN_TOKENS } from "../agents/context-window-guard.js";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { buildModelAliasIndex, modelKey } from "../agents/model-selection.js";
-import type { OpenClawConfig } from "../config/config.js";
 import type { ModelProviderConfig } from "../config/types.models.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef, type SecretInput } from "../config/types.secrets.js";
 import { OLLAMA_DEFAULT_BASE_URL } from "../plugins/provider-model-defaults.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
+  normalizeOptionalString,
 } from "../shared/string-coerce.js";
 import { fetchWithTimeout } from "../utils/fetch-timeout.js";
 import {
@@ -399,7 +400,8 @@ async function requestOpenAiVerification(params: {
       body: {
         model: params.modelId,
         messages: [{ role: "user", content: "Hi" }],
-        max_tokens: 1,
+        // Recent OpenAI-family endpoints reject probes below 16 tokens.
+        max_tokens: 16,
         stream: false,
       },
     });
@@ -445,12 +447,7 @@ async function promptBaseUrlAndKey(params: {
     initialValue: params.initialBaseUrl ?? OLLAMA_DEFAULT_BASE_URL,
     placeholder: "https://api.example.com/v1",
     validate: (val) => {
-      try {
-        new URL(val);
-        return undefined;
-      } catch {
-        return "Please enter a valid URL (e.g. http://...)";
-      }
+      return URL.canParse(val) ? undefined : "Please enter a valid URL (e.g. http://...)";
     },
   });
   const baseUrl = baseUrlInput.trim();
@@ -576,8 +573,8 @@ export function resolveCustomProviderId(
 export function parseNonInteractiveCustomApiFlags(
   params: ParseNonInteractiveCustomApiFlagsParams,
 ): ParsedNonInteractiveCustomApiFlags {
-  const baseUrl = params.baseUrl?.trim() ?? "";
-  const modelId = params.modelId?.trim() ?? "";
+  const baseUrl = normalizeOptionalString(params.baseUrl) ?? "";
+  const modelId = normalizeOptionalString(params.modelId) ?? "";
   if (!baseUrl || !modelId) {
     throw new CustomApiError(
       "missing_required",
@@ -588,8 +585,8 @@ export function parseNonInteractiveCustomApiFlags(
     );
   }
 
-  const apiKey = params.apiKey?.trim();
-  const providerId = params.providerId?.trim();
+  const apiKey = normalizeOptionalString(params.apiKey);
+  const providerId = normalizeOptionalString(params.providerId);
   if (providerId && !normalizeEndpointId(providerId)) {
     throw new CustomApiError(
       "invalid_provider_id",
@@ -606,10 +603,8 @@ export function parseNonInteractiveCustomApiFlags(
 }
 
 export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): CustomApiResult {
-  const baseUrl = params.baseUrl.trim();
-  try {
-    new URL(baseUrl);
-  } catch {
+  const baseUrl = normalizeOptionalString(params.baseUrl) ?? "";
+  if (!URL.canParse(baseUrl)) {
     throw new CustomApiError("invalid_base_url", "Custom provider base URL must be a valid URL.");
   }
 
@@ -620,7 +615,7 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
     );
   }
 
-  const modelId = params.modelId.trim();
+  const modelId = normalizeOptionalString(params.modelId) ?? "";
   if (!modelId) {
     throw new CustomApiError("invalid_model_id", "Custom provider model ID is required.");
   }
@@ -638,7 +633,7 @@ export function applyCustomApiConfig(params: ApplyCustomApiConfigParams): Custom
   const providers = params.config.models?.providers ?? {};
 
   const modelRef = modelKey(providerId, modelId);
-  const alias = params.alias?.trim() ?? "";
+  const alias = normalizeOptionalString(params.alias) ?? "";
   const aliasError = resolveAliasError({
     raw: alias,
     cfg: params.config,
