@@ -147,12 +147,21 @@ export class SqliteDatabase implements DatabaseInterface {
   }
 
   async getLeadByPhone(phoneNumber: string): Promise<Lead | null> {
-    // Try exact match first, then normalized — so admin commands work
-    // regardless of whether the user types +521, 52, or the full number.
+    // Try exact match, normalized (52...), and denormalized (+521...) variants —
+    // so lookups work regardless of which format WhatsApp delivers the JID in.
     const normalized = normalizePhone(phoneNumber);
-    const row = this.db
-      .prepare("SELECT * FROM leads WHERE phone_number = ? OR phone_number = ?")
-      .get(phoneNumber, normalized) as Lead | undefined;
+    // Denormalized: 52XXXXXXXXXX → +521XXXXXXXXXX (for records stored in old E.164 format)
+    const denormalized =
+      normalized.length === 12 && normalized.startsWith("52") ? "+521" + normalized.slice(2) : null;
+    const row = denormalized
+      ? (this.db
+          .prepare(
+            "SELECT * FROM leads WHERE phone_number = ? OR phone_number = ? OR phone_number = ?",
+          )
+          .get(phoneNumber, normalized, denormalized) as Lead | undefined)
+      : (this.db
+          .prepare("SELECT * FROM leads WHERE phone_number = ? OR phone_number = ?")
+          .get(phoneNumber, normalized) as Lead | undefined);
     return row || null;
   }
 
@@ -229,7 +238,9 @@ export class SqliteDatabase implements DatabaseInterface {
 
   async isLeadQualified(leadId: number): Promise<boolean> {
     const lead = await this.getLeadById(leadId);
-    if (!lead) {return false;}
+    if (!lead) {
+      return false;
+    }
 
     return !!(
       lead.name &&
@@ -593,7 +604,14 @@ export class SqliteDatabase implements DatabaseInterface {
   async upsertLead(
     phone: string,
     data: Partial<
-      import("./schema.js").QualificationData & import("./schema.js").QuoteData & { notes: string }
+      import("./schema.js").QualificationData &
+        import("./schema.js").QuoteData & {
+          notes: string;
+          follow_up_sent_at: number | null;
+          follow_up_attempts: number;
+          survey_sent_at: number | null;
+          instagram_reminder_sent_at: number | null;
+        }
     >,
   ): Promise<import("./schema.js").Lead> {
     const normalizedPhone = normalizePhone(phone);
@@ -648,6 +666,22 @@ export class SqliteDatabase implements DatabaseInterface {
       if (data.notes !== undefined) {
         updates.push("notes = ?");
         values.push(data.notes);
+      }
+      if (data.follow_up_sent_at !== undefined) {
+        updates.push("follow_up_sent_at = ?");
+        values.push(data.follow_up_sent_at);
+      }
+      if (data.follow_up_attempts !== undefined) {
+        updates.push("follow_up_attempts = ?");
+        values.push(data.follow_up_attempts);
+      }
+      if (data.survey_sent_at !== undefined) {
+        updates.push("survey_sent_at = ?");
+        values.push(data.survey_sent_at);
+      }
+      if (data.instagram_reminder_sent_at !== undefined) {
+        updates.push("instagram_reminder_sent_at = ?");
+        values.push(data.instagram_reminder_sent_at);
       }
 
       if (updates.length > 0) {

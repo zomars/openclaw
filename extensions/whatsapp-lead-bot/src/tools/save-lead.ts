@@ -8,7 +8,7 @@
 import type { Database } from "../database.js";
 import type { LabelService } from "../labels.js";
 import type { Runtime } from "../runtime.js";
-import { computeScore } from "../scoring.js";
+import { computeScore, isInSinaloa } from "../scoring.js";
 
 export const saveLeadTool = {
   name: "save_lead",
@@ -28,6 +28,22 @@ export const saveLeadTool = {
       quote_cash: { type: "number" as const, description: "Cash quote in MXN" },
       quote_financed: { type: "number" as const, description: "Financed quote in MXN" },
       notes: { type: "string" as const, description: "Free-text notes" },
+      follow_up_sent_at: {
+        type: "number" as const,
+        description: "Timestamp (ms) when last follow-up message was sent",
+      },
+      follow_up_attempts: {
+        type: "number" as const,
+        description: "Total number of follow-up messages sent so far",
+      },
+      survey_sent_at: {
+        type: "number" as const,
+        description: "Timestamp (ms) when the stand-by survey was sent (attempt 3)",
+      },
+      instagram_reminder_sent_at: {
+        type: "number" as const,
+        description: "Timestamp (ms) when the Instagram reminder was sent (14-day post-survey)",
+      },
     },
     required: ["phone"],
   },
@@ -43,6 +59,10 @@ export const saveLeadTool = {
       quote_cash?: number;
       quote_financed?: number;
       notes?: string;
+      follow_up_sent_at?: number;
+      follow_up_attempts?: number;
+      survey_sent_at?: number;
+      instagram_reminder_sent_at?: number;
     },
     context: { db: Database; labelService: LabelService; runtime: Runtime },
   ) => {
@@ -101,6 +121,20 @@ export const saveLeadTool = {
         console.log(`[save_lead] Status label applied: ${phone} → ${currentStatus}`);
       } catch (err) {
         console.error(`[save_lead] Failed to apply status label ${phone}:`, err);
+      }
+    }
+
+    // Apply/remove "Fuera de área" tag based on location
+    if (lead.location) {
+      try {
+        if (!isInSinaloa(lead.location)) {
+          await labelService.applyTag(phone, "FUERA_DE_AREA", runtime);
+          console.log(`[save_lead] "Fuera de área" tag applied: ${phone} (${lead.location})`);
+        } else {
+          await labelService.removeTag(phone, "FUERA_DE_AREA", runtime);
+        }
+      } catch (err) {
+        console.error(`[save_lead] Failed to apply/remove geo tag ${phone}:`, err);
       }
     }
 

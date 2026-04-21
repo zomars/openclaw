@@ -15,6 +15,7 @@ import { normalizePhone } from "./utils/phone.js";
 export interface LabelConfig {
   scores: Record<string, string>;
   statuses: { BOT: string; HUMANO: string };
+  tags?: { FUERA_DE_AREA?: string };
 }
 
 export interface LabelService {
@@ -22,6 +23,8 @@ export interface LabelService {
   applyStatus(phone: string, status: string, runtime: Runtime): Promise<void>;
   removeAllScoreLabels(phone: string, runtime: Runtime): Promise<void>;
   syncAll(phone: string, score: string | null, status: string, runtime: Runtime): Promise<void>;
+  applyTag(phone: string, tagKey: string, runtime: Runtime): Promise<void>;
+  removeTag(phone: string, tagKey: string, runtime: Runtime): Promise<void>;
   ensureLabels?(runtime: Runtime): Promise<void>;
 }
 
@@ -33,11 +36,13 @@ const DEFAULT_COLORS: Record<string, number> = {
   OUT: 14,
   BOT: 4,
   HUMANO: 5,
+  "Fuera de área": 14,
 };
 
 export class WhatsAppLabelService implements LabelService {
   private readonly scoreNames: Record<string, string>;
   private readonly statusNames: { BOT: string; HUMANO: string };
+  private readonly tagNames: Record<string, string>;
   private readonly allScoreNames: string[];
   // In-memory cache: label name → WhatsApp label ID
   private readonly idCache = new Map<string, string>();
@@ -49,6 +54,9 @@ export class WhatsAppLabelService implements LabelService {
   ) {
     this.scoreNames = labelConfig.scores;
     this.statusNames = labelConfig.statuses;
+    this.tagNames = {
+      FUERA_DE_AREA: labelConfig.tags?.FUERA_DE_AREA ?? "Fuera de área",
+    };
     this.allScoreNames = [...new Set(Object.values(this.scoreNames))];
   }
 
@@ -56,7 +64,9 @@ export class WhatsAppLabelService implements LabelService {
   private async resolveId(name: string, runtime: Runtime): Promise<string | null> {
     // 1. In-memory cache
     const cached = this.idCache.get(name);
-    if (cached) {return cached;}
+    if (cached) {
+      return cached;
+    }
 
     // 2. DB lookup
     const dbId = await this.labelStore.getLabelId(name);
@@ -104,17 +114,23 @@ export class WhatsAppLabelService implements LabelService {
 
   /** Delay between WhatsApp API calls to avoid rate limits (429) */
   private delay(): Promise<void> {
-    if (this.delayMs <= 0) {return Promise.resolve();}
+    if (this.delayMs <= 0) {
+      return Promise.resolve();
+    }
     return new Promise((r) => setTimeout(r, this.delayMs));
   }
 
   /** Apply score label and remove other score labels */
   async applyScore(phone: string, score: string, runtime: Runtime): Promise<void> {
     const labelName = this.scoreNames[score];
-    if (!labelName) {return;}
+    if (!labelName) {
+      return;
+    }
 
     const labelId = await this.resolveId(labelName, runtime);
-    if (!labelId) {return;}
+    if (!labelId) {
+      return;
+    }
 
     const phoneJid = `${normalizePhone(phone)}@s.whatsapp.net`;
     await runtime.addChatLabel?.(phoneJid, labelId);
@@ -122,7 +138,9 @@ export class WhatsAppLabelService implements LabelService {
 
     // Remove other score labels
     for (const otherName of this.allScoreNames) {
-      if (otherName === labelName) {continue;}
+      if (otherName === labelName) {
+        continue;
+      }
       const otherId = await this.resolveId(otherName, runtime);
       if (otherId && otherId !== labelId) {
         try {
@@ -191,9 +209,48 @@ export class WhatsAppLabelService implements LabelService {
     await this.applyStatus(phone, status, runtime);
   }
 
+  /** Apply a tag label (e.g. "Fuera de área") to a chat */
+  async applyTag(phone: string, tagKey: string, runtime: Runtime): Promise<void> {
+    const labelName = this.tagNames[tagKey];
+    if (!labelName) {
+      return;
+    }
+    const labelId = await this.resolveId(labelName, runtime);
+    if (!labelId) {
+      return;
+    }
+    const phoneJid = `${normalizePhone(phone)}@s.whatsapp.net`;
+    await runtime.addChatLabel?.(phoneJid, labelId);
+    await this.delay();
+  }
+
+  /** Remove a tag label from a chat */
+  async removeTag(phone: string, tagKey: string, runtime: Runtime): Promise<void> {
+    const labelName = this.tagNames[tagKey];
+    if (!labelName) {
+      return;
+    }
+    const labelId = await this.resolveId(labelName, runtime);
+    if (!labelId) {
+      return;
+    }
+    const phoneJid = `${normalizePhone(phone)}@s.whatsapp.net`;
+    try {
+      await runtime.removeChatLabel?.(phoneJid, labelId);
+      await this.delay();
+    } catch {
+      /* tag may not exist on this chat */
+    }
+  }
+
   /** Pre-warm: resolve all configured label names to IDs */
   async ensureLabels(runtime: Runtime): Promise<void> {
-    const allNames = [...this.allScoreNames, this.statusNames.BOT, this.statusNames.HUMANO];
+    const allNames = [
+      ...this.allScoreNames,
+      this.statusNames.BOT,
+      this.statusNames.HUMANO,
+      ...Object.values(this.tagNames),
+    ];
     const unique = [...new Set(allNames)];
     for (const name of unique) {
       await this.resolveId(name, runtime);

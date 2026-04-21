@@ -12,6 +12,10 @@ const zodSchema = z.object({
   // Team members who bypass lead pipeline (coworker mode, no notifications)
   teamNumbers: z.array(z.string()).default([]),
 
+  // Phone prefixes for eval/dry-run mode — messages to matching numbers skip WhatsApp delivery
+  // while still running through the full plugin pipeline (hooks, lead DB, etc.)
+  dryRunPrefixes: z.array(z.string()).default([]),
+
   // Agent identity (for session key construction)
   agentId: z.string().optional(),
 
@@ -113,10 +117,16 @@ const zodSchema = z.object({
           HUMANO: z.string().default("HUMANO"),
         })
         .default({ BOT: "BOT", HUMANO: "HUMANO" }),
+      tags: z
+        .object({
+          FUERA_DE_AREA: z.string().default("Fuera de área"),
+        })
+        .default({ FUERA_DE_AREA: "Fuera de área" }),
     })
     .default({
       scores: { HOT: "HOT", WARM: "WARM", COLD: "COLD", OUT: "OUT" },
       statuses: { BOT: "BOT", HUMANO: "HUMANO" },
+      tags: { FUERA_DE_AREA: "Fuera de área" },
     }),
 
   // Supabase edge function URLs

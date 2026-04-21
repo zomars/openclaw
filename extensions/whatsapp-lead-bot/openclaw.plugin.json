@@ -27,6 +27,11 @@
         "items": { "type": "string" },
         "description": "Phone numbers that bypass lead pipeline (coworker mode)"
       },
+      "dryRunPrefixes": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Phone prefixes for eval/dry-run mode — messages to matching numbers skip WhatsApp delivery"
+      },
       "agentId": {
         "type": "string",
         "description": "Agent ID for session key construction (defaults to first whatsappAccount or 'main')"

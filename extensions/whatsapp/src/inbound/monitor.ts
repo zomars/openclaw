@@ -379,7 +379,15 @@ export async function attachWebInboxToSocket(
       remoteJid,
     });
     if (!access.allowed) {
-      return null;
+      // Account owner messages (fromMe=true, not self-chat) are blocked from normal processing
+      // but must still reach plugin hooks so they can trigger handoff detection.
+      // Bot-sent message echoes are already filtered above by isRecentOutboundMessage.
+      if (!access.isAccountOwnerMessage) {
+        return null;
+      }
+      logVerbose(
+        `Account owner outbound message for ${remoteJid} — passing through for handoff detection`,
+      );
     }
 
     return {

@@ -7,9 +7,8 @@
 
 import os from "node:os";
 import path from "node:path";
-
-import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import { sendWebChannelMessage } from "../../src/plugins/runtime/runtime-web-channel-plugin.js";
+import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import { AdminCommandHandler } from "./src/admin/commands.js";
 import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
@@ -99,9 +98,7 @@ const plugin = {
         },
         async addChatLabel(chatJid: string, labelId: string) {
           try {
-            if (
-              typeof waFns?.addChatLabelWhatsApp === "function"
-            ) {
+            if (typeof waFns?.addChatLabelWhatsApp === "function") {
               await waFns?.addChatLabelWhatsApp(chatJid, labelId, {
                 accountId,
               });
@@ -112,14 +109,8 @@ const plugin = {
         },
         async removeChatLabel(chatJid: string, labelId: string) {
           try {
-            if (
-              typeof waFns?.removeChatLabelWhatsApp === "function"
-            ) {
-              await waFns?.removeChatLabelWhatsApp(
-                chatJid,
-                labelId,
-                { accountId },
-              );
+            if (typeof waFns?.removeChatLabelWhatsApp === "function") {
+              await waFns?.removeChatLabelWhatsApp(chatJid, labelId, { accountId });
             }
           } catch (err) {
             console.error("[lead-bot] removeChatLabel failed:", err);
@@ -163,15 +154,8 @@ const plugin = {
         },
         async addMessageLabel(chatJid: string, messageId: string, labelId: string) {
           try {
-            if (
-              typeof waFns?.addMessageLabelWhatsApp === "function"
-            ) {
-              await waFns?.addMessageLabelWhatsApp(
-                chatJid,
-                messageId,
-                labelId,
-                { accountId },
-              );
+            if (typeof waFns?.addMessageLabelWhatsApp === "function") {
+              await waFns?.addMessageLabelWhatsApp(chatJid, messageId, labelId, { accountId });
             }
           } catch (err) {
             console.error("[lead-bot] addMessageLabel failed:", err);
@@ -179,16 +163,8 @@ const plugin = {
         },
         async removeMessageLabel(chatJid: string, messageId: string, labelId: string) {
           try {
-            if (
-              typeof waFns?.removeMessageLabelWhatsApp ===
-              "function"
-            ) {
-              await waFns?.removeMessageLabelWhatsApp(
-                chatJid,
-                messageId,
-                labelId,
-                { accountId },
-              );
+            if (typeof waFns?.removeMessageLabelWhatsApp === "function") {
+              await waFns?.removeMessageLabelWhatsApp(chatJid, messageId, labelId, { accountId });
             }
           } catch (err) {
             console.error("[lead-bot] removeMessageLabel failed:", err);
@@ -208,10 +184,7 @@ const plugin = {
         },
         async getBusinessProfile(jid: string) {
           try {
-            if (
-              typeof waFns?.getBusinessProfileWhatsApp ===
-              "function"
-            ) {
+            if (typeof waFns?.getBusinessProfileWhatsApp === "function") {
               return await waFns?.getBusinessProfileWhatsApp(jid, {
                 accountId,
               });
@@ -387,7 +360,12 @@ const plugin = {
     registerPluginTool("Save Lead", saveLeadTool, { db, labelService, runtime });
     registerPluginTool("Get Lead", getLeadTool, { db });
     registerPluginTool("List Leads", listLeadsTool, { db });
-    registerPluginTool("Handoff Lead", handoffLeadTool, { db, labelService, runtime });
+    registerPluginTool("Handoff Lead", handoffLeadTool, {
+      db,
+      labelService,
+      runtime,
+      agentNotifier,
+    });
     registerPluginTool("Block Lead", blockLeadTool, { db });
     registerPluginTool("Save Receipt Data", saveReceiptDataTool, { db });
     registerPluginTool("Sync Labels", syncLabelsTool, { db, labelService, runtime });
@@ -405,7 +383,9 @@ const plugin = {
           return;
         }
         const stored = parseRawMessage(rawMsg as Parameters<typeof parseRawMessage>[0]);
-        if (!stored) {return;}
+        if (!stored) {
+          return;
+        }
         db.storeMessage(stored).catch((err) => {
           console.error("[lead-bot] Failed to store message:", err);
         });

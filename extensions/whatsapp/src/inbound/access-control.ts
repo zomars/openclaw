@@ -141,6 +141,7 @@ export async function checkInboundAccessControl(params: {
         shouldMarkRead: false,
         isSelfChat,
         resolvedAccountId: account.accountId,
+        isAccountOwnerMessage: true,
       };
     }
     if (access.decision === "block" && access.reason === "dmPolicy=disabled") {

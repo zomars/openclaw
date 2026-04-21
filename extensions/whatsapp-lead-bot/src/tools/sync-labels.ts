@@ -8,7 +8,7 @@
 import type { Database } from "../database.js";
 import type { LabelService } from "../labels.js";
 import type { Runtime } from "../runtime.js";
-import { computeScore } from "../scoring.js";
+import { computeScore, isInSinaloa } from "../scoring.js";
 
 export const syncLabelsTool = {
   name: "sync_labels",
@@ -84,6 +84,15 @@ export const syncLabelsTool = {
           // Apply labels (use computed score, or keep existing if data is incomplete)
           const effectiveScore = computedScore ?? previousScore;
           await labelService.syncAll(phone, effectiveScore, status, runtime);
+
+          // Apply/remove "Fuera de área" tag based on location
+          if (lead.location) {
+            if (!isInSinaloa(lead.location)) {
+              await labelService.applyTag(phone, "FUERA_DE_AREA", runtime);
+            } else {
+              await labelService.removeTag(phone, "FUERA_DE_AREA", runtime);
+            }
+          }
 
           // Pause between batches to avoid WhatsApp rate limits (429)
           if ((i + 1) % BATCH_SIZE === 0 && i + 1 < allLeads.length) {

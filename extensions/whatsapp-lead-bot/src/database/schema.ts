@@ -26,6 +26,9 @@ export interface Lead {
   rate_limit_count: number;
   rate_limit_window_start: number | null;
   follow_up_sent_at: number | null;
+  follow_up_attempts: number;
+  survey_sent_at: number | null;
+  instagram_reminder_sent_at: number | null;
   language: string | null;
   name: string | null;
   location: string | null;
