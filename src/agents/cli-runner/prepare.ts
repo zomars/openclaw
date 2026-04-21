@@ -14,9 +14,8 @@ import {
   makeBootstrapWarn as makeBootstrapWarnImpl,
   resolveBootstrapContextForRun as resolveBootstrapContextForRunImpl,
 } from "../bootstrap-files.js";
-import { resolveCliAuthEpoch } from "../cli-auth-epoch.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
-import { hashCliSessionText, resolveCliSessionReuse } from "../cli-session.js";
+import { resolveCliSessionReuse } from "../cli-session.js";
 import { resolveHeartbeatPromptForSystemPrompt } from "../heartbeat-system-prompt.js";
 import {
   resolveBootstrapMaxChars,
@@ -73,12 +72,7 @@ export async function prepareCliRunContext(
   if (!backendResolved) {
     throw new Error(`Unknown CLI backend: ${params.provider}`);
   }
-  const authEpoch = await resolveCliAuthEpoch({
-    provider: params.provider,
-    authProfileId: params.authProfileId,
-  });
   const extraSystemPrompt = params.extraSystemPrompt?.trim() ?? "";
-  const extraSystemPromptHash = hashCliSessionText(extraSystemPrompt);
   const modelId = (params.model ?? "default").trim() || "default";
   const normalizedModel = normalizeCliModel(modelId, backendResolved.config);
   const modelDisplay = `${params.provider}/${modelId}`;
@@ -149,21 +143,10 @@ export async function prepareCliRunContext(
     warn: (message) => cliBackendLog.warn(message),
   });
   const reusableCliSession = params.cliSessionBinding
-    ? resolveCliSessionReuse({
-        binding: params.cliSessionBinding,
-        authProfileId: params.authProfileId,
-        authEpoch,
-        extraSystemPromptHash,
-        mcpConfigHash: preparedBackend.mcpConfigHash,
-      })
+    ? resolveCliSessionReuse({ binding: params.cliSessionBinding })
     : params.cliSessionId
       ? { sessionId: params.cliSessionId }
       : {};
-  if (reusableCliSession.invalidatedReason) {
-    cliBackendLog.info(
-      `cli session reset: provider=${params.provider} reason=${reusableCliSession.invalidatedReason}`,
-    );
-  }
   const heartbeatPrompt = resolveHeartbeatPromptForSystemPrompt({
     config: params.config,
     agentId: sessionAgentId,
@@ -250,7 +233,5 @@ export async function prepareCliRunContext(
     systemPromptReport,
     bootstrapPromptWarningLines: bootstrapPromptWarning.lines,
     heartbeatPrompt,
-    authEpoch,
-    extraSystemPromptHash,
   };
 }

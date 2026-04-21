@@ -38,6 +38,12 @@ export type PluginHookMessageReceivedEvent = {
   metadata?: Record<string, unknown>;
 };
 
+export type PluginHookMessageReceivedResult = {
+  content?: string;
+  suppress?: boolean;
+  suppressReason?: string;
+};
+
 export type PluginHookMessageSendingEvent = {
   to: string;
   content: string;
