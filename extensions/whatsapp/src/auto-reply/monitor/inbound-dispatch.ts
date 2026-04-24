@@ -133,6 +133,7 @@ export function buildWhatsAppInboundContext(params: {
     CommandAuthorized: params.commandAuthorized,
     WasMentioned: params.msg.wasMentioned,
     ...(params.msg.location ? toLocationContext(params.msg.location) : {}),
+    IsAccountOwnerMessage: params.msg.isAccountOwnerMessage,
     Provider: "whatsapp",
     Surface: "whatsapp",
     OriginatingChannel: "whatsapp",
