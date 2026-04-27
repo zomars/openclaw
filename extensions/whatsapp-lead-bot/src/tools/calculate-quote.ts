@@ -33,7 +33,7 @@ export const calculateQuoteTool = {
       },
       panelWattage: {
         type: "number" as const,
-        description: "Panel wattage to use for calculation. Defaults to 620W if not specified.",
+        description: "Panel wattage to use for calculation. Defaults to 645W if not specified.",
       },
     },
     required: ["billId"],
@@ -43,7 +43,7 @@ export const calculateQuoteTool = {
     input: CalculateQuoteInput,
     context: CalculateQuoteContext,
   ): Promise<Record<string, unknown>> {
-    const { billId, panelWattage = 620 } = input;
+    const { billId, panelWattage = 645 } = input;
     const { apiKey, apiUrl } = context;
 
     // Validación estricta: billId es obligatorio
