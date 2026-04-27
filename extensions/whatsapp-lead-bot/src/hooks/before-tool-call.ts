@@ -19,7 +19,7 @@ import type { Database } from "../database.js";
 import { allowedToolsForState, isToolAllowedInState } from "../flow/allowed-tools.js";
 import { computeLeadState, leadStateInputFromRow, type LeadState } from "../flow/state.js";
 import type { PluginHookBeforeToolCallEvent, PluginHookBeforeToolCallResult } from "../types.js";
-import { phoneFromSessionKey } from "./before-prompt-build.js";
+import { agentIdFromSessionKey, phoneFromSessionKey } from "./before-prompt-build.js";
 import type { ViolationTracker } from "./violation-tracker.js";
 
 export interface PricingEscalationContext {
@@ -58,6 +58,13 @@ export interface BeforeToolCallHandlerDeps {
    * back to the LLM as a tool error.
    */
   onPricingEscalation?: (ctx: PricingEscalationContext) => Promise<void>;
+  /**
+   * Only enforce hooks (gating + pricing guard) when the invoking agent matches
+   * this id. Without this, sibling agents (e.g. solayre-coworker) that share
+   * the plugin's tools also get gated by the lead state machine, blocking
+   * tools like process_cfe_receipt that don't belong to the lead funnel.
+   */
+  expectedAgentId?: string;
 }
 
 const FORBIDDEN_PRICING_PATTERNS: { name: string; re: RegExp }[] = [
@@ -160,6 +167,14 @@ export function createBeforeToolCallHandler(deps: BeforeToolCallHandlerDeps = {}
     event: PluginHookBeforeToolCallEvent,
     ctx?: SessionContext,
   ): Promise<PluginHookBeforeToolCallResult | void> {
+    // Bail entirely when the invoking agent isn't the lead bot. The plugin's
+    // tools are intentionally shared (process_cfe_receipt etc.), but the
+    // state machine and pricing guardrail are lead-funnel specific.
+    if (deps.expectedAgentId) {
+      const invokingAgent = agentIdFromSessionKey(ctx?.sessionKey);
+      if (invokingAgent !== deps.expectedAgentId) return;
+    }
+
     // Layer 2: tool gating (only when DB is wired and we can resolve a lead).
     if (deps.db && ctx?.sessionKey) {
       const resolved = await leadStateForSession(deps.db, ctx.sessionKey);

@@ -325,6 +325,7 @@ const plugin = {
         db,
         violations: violationTracker,
         pricingStrikeThreshold: 2,
+        expectedAgentId: config.agentId,
         onPricingEscalation: async ({ phone, hit, blockedText }) => {
           const lead = await db.getLeadByPhone(phone);
           if (!lead) {
@@ -359,7 +360,10 @@ const plugin = {
         },
       }),
     );
-    api.on("before_prompt_build", createBeforePromptBuildHandler({ db }));
+    api.on(
+      "before_prompt_build",
+      createBeforePromptBuildHandler({ db, expectedAgentId: config.agentId }),
+    );
 
     console.log("[whatsapp-lead-bot] Hooks registered");
 

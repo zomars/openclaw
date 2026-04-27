@@ -117,4 +117,23 @@ describe("before_tool_call tool gating", () => {
 
     expect(result).toBeUndefined();
   });
+
+  it("does not gate when invoking agent does not match expectedAgentId", async () => {
+    const { db } = createTestDb();
+    // Lead in QUOTED state — would normally block process_cfe_receipt.
+    await db.upsertLead("526671000066", {
+      name: "Coworker",
+      status: "qualified",
+      panels_quoted: 12,
+    });
+
+    const handler = createBeforeToolCallHandler({ db, expectedAgentId: "solayre-leads" });
+    const result = await handler(
+      evt("process_cfe_receipt", { mediaPath: "/x", coworkerPhone: "526671000066" }),
+      { sessionKey: "agent:solayre-coworker:whatsapp:default:direct:526671000066" },
+    );
+
+    // No gating from the lead-funnel hooks for sibling agents.
+    expect(result).toBeUndefined();
+  });
 });

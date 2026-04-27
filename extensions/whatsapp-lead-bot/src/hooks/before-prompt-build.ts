@@ -18,6 +18,13 @@ import type {
 
 export interface BeforePromptBuildHandlerDeps {
   db: Database;
+  /**
+   * Only inject the lead state prompt when the invoking agent matches this id.
+   * Without this, sibling agents (e.g. solayre-coworker) that share the plugin's
+   * tools also receive the lead state machine prompt, which corrupts their
+   * behavior with state belonging to a different conversation.
+   */
+  expectedAgentId?: string;
 }
 
 /**
@@ -34,12 +41,29 @@ export function phoneFromSessionKey(sessionKey: string | undefined): string | nu
   return phone && phone.length > 0 ? phone : null;
 }
 
+/**
+ * Extract the agent id from a sessionKey of the form:
+ *   agent:<agentId>:<channel>:<accountId>:direct:<phone>
+ */
+export function agentIdFromSessionKey(sessionKey: string | undefined): string | null {
+  if (!sessionKey) return null;
+  const parts = sessionKey.split(":");
+  if (parts.length < 2) return null;
+  if (parts[0] !== "agent") return null;
+  return parts[1] || null;
+}
+
 export function createBeforePromptBuildHandler(deps: BeforePromptBuildHandlerDeps) {
   return async function onBeforePromptBuild(
     _event: PluginHookBeforePromptBuildEvent,
     ctx: PluginHookAgentContext,
   ): Promise<PluginHookBeforePromptBuildResult | void> {
     if (ctx.channelId !== "whatsapp") return;
+
+    if (deps.expectedAgentId) {
+      const invokingAgent = agentIdFromSessionKey(ctx.sessionKey);
+      if (invokingAgent !== deps.expectedAgentId) return;
+    }
 
     const phone = phoneFromSessionKey(ctx.sessionKey);
     if (!phone) return;
