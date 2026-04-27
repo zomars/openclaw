@@ -42,6 +42,7 @@ import { saveLeadTool } from "./src/tools/save-lead.js";
 import { saveReceiptDataTool } from "./src/tools/save-receipt-data.js";
 import { sendDisqualificationTool } from "./src/tools/send-disqualification.js";
 import { sendHandoffToAleTool } from "./src/tools/send-handoff-to-ale.js";
+import { sendQuoteSequenceTool, type QuoteResult } from "./src/tools/send-quote-sequence.js";
 import { sendReceiptRequestTool } from "./src/tools/send-receipt-request.js";
 import { syncLabelsTool } from "./src/tools/sync-labels.js";
 import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
@@ -357,6 +358,80 @@ const plugin = {
       registerPluginTool("Calculate Quote", calculateQuoteTool, {
         apiKey: supabaseApiKey,
         apiUrl: config.supabaseQuoteUrl,
+      });
+
+      // Adapter: maps the Supabase quote response into the strict shape that
+      // send_quote_sequence renders. Defensive about missing fields so a
+      // successful API call with partial data fails loudly instead of
+      // sending nonsensical numbers to a lead.
+      const quoteCalculator = async (
+        billId: string,
+      ): Promise<{ success: true; quote: QuoteResult } | { success: false; error: string }> => {
+        const result = (await calculateQuoteTool.execute(
+          { billId },
+          { apiKey: supabaseApiKey, apiUrl: config.supabaseQuoteUrl },
+        )) as Record<string, unknown>;
+        if (result.success !== true) {
+          return {
+            success: false,
+            error: typeof result.error === "string" ? result.error : "calculate_quote failed",
+          };
+        }
+        const bill = (result.bill ?? {}) as Record<string, unknown>;
+        const q = (result.quote ?? {}) as Record<string, unknown>;
+
+        const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : NaN);
+        const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+        const cashPrice = num(q.cashPrice ?? q.cash_price ?? q.precio_contado);
+        const financedPrice = num(q.financedPrice ?? q.financed_price ?? q.precio_financiado);
+        const annualSavings = num(q.annualSavings ?? q.annual_savings ?? q.ahorro_anual);
+        const annualCost = num(q.annualCost ?? q.annual_cost ?? bill.annual_cost ?? bill.costo_anual);
+        const coveragePercent = num(q.coveragePercent ?? q.coverage_percent ?? q.cobertura);
+        const panelCount = num(q.panelCount ?? q.panel_count ?? q.paneles);
+        const paybackYears = num(q.paybackYears ?? q.payback_years ?? q.roi_anos ?? q.roiYears);
+        const serviceNumber = str(bill.serviceNumber ?? bill.service_number ?? bill.numero_servicio);
+        const pdfUrl =
+          typeof result.pdfUrl === "string" && result.pdfUrl.length > 0 ? result.pdfUrl : null;
+
+        const required = {
+          serviceNumber,
+          cashPrice,
+          financedPrice,
+          annualSavings,
+          annualCost,
+          coveragePercent,
+          panelCount,
+          paybackYears,
+        };
+        for (const [k, v] of Object.entries(required)) {
+          if (typeof v === "number" ? !Number.isFinite(v) : !v) {
+            return { success: false, error: `quote missing field: ${k}` };
+          }
+        }
+
+        return {
+          success: true,
+          quote: {
+            serviceNumber,
+            cashPrice,
+            depositPrice: cashPrice * 0.5,
+            financedPrice,
+            annualSavings,
+            annualCost,
+            twentyFiveYearProjection: annualCost * 25,
+            coveragePercent,
+            panelCount,
+            paybackYears,
+            pdfUrl,
+          },
+        };
+      };
+
+      registerPluginTool("Send Quote Sequence", sendQuoteSequenceTool, {
+        db,
+        runtime,
+        calculate: quoteCalculator,
       });
     }
 
