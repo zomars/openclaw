@@ -40,6 +40,7 @@ import { parseCFEReceiptTool } from "./src/tools/parse-cfe-receipt.js";
 import { saveLeadTool } from "./src/tools/save-lead.js";
 import { saveReceiptDataTool } from "./src/tools/save-receipt-data.js";
 import { syncLabelsTool } from "./src/tools/sync-labels.js";
+import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
 const plugin = {
   id: "whatsapp-lead-bot",
   name: "WhatsApp Lead Bot",
@@ -372,6 +373,7 @@ const plugin = {
     registerPluginTool("Get Labels", getLabelsTool, { runtime });
     registerPluginTool("Create Label", createLabelTool, { runtime });
     registerPluginTool("Add Chat Label", addChatLabelTool, { runtime });
+    registerPluginTool("Fetch WhatsApp History", whatsappHistoryFetchTool, { db });
 
     console.log("[whatsapp-lead-bot] Plugin registered successfully");
 
