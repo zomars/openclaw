@@ -36,12 +36,20 @@ export const whatsappHistoryFetchTool = {
     params: { peer: string; limit?: number; since_iso?: string },
     context: { db: Database },
   ) => {
-    const peerJid = resolvePeerJid(params.peer);
-    if (!peerJid) {
+    const resolved = resolvePeerLookup(params.peer);
+    if (!resolved) {
       return { success: false, error: "Invalid peer; expected E.164 or JID." };
     }
     const limit = Math.max(1, Math.min(params.limit ?? 100, 500));
-    let rows = context.db.getMessagesSync(peerJid, limit);
+
+    // Prefer E.164 lookup (LID-aware: matches both @s.whatsapp.net and @lid rows
+    // once peer_e164 has been backfilled by the enriched event).
+    let rows = resolved.peerE164
+      ? context.db.getMessagesByPeerE164Sync(resolved.peerE164, limit)
+      : [];
+    if (rows.length === 0 && resolved.peerJid) {
+      rows = context.db.getMessagesSync(resolved.peerJid, limit);
+    }
     if (params.since_iso) {
       const sinceMs = Date.parse(params.since_iso);
       if (Number.isFinite(sinceMs)) {
@@ -51,7 +59,8 @@ export const whatsappHistoryFetchTool = {
     }
     return {
       success: true,
-      peer_jid: peerJid,
+      peer_jid: resolved.peerJid ?? null,
+      peer_e164: resolved.peerE164 ?? null,
       count: rows.length,
       messages: rows.map((r) => ({
         id: r.id,
@@ -69,17 +78,26 @@ export const whatsappHistoryFetchTool = {
   },
 };
 
-function resolvePeerJid(peer: string): string | null {
+function resolvePeerLookup(
+  peer: string,
+): { peerE164: string | null; peerJid: string | null } | null {
   const trimmed = peer.trim();
   if (!trimmed) {
     return null;
   }
   if (trimmed.includes("@")) {
-    return trimmed;
+    // Caller passed a JID. If it's @s.whatsapp.net we can also derive the E.164.
+    if (trimmed.endsWith("@s.whatsapp.net")) {
+      const digits = trimmed.split("@")[0];
+      if (/^\d+$/.test(digits)) {
+        return { peerE164: `+${digits}`, peerJid: trimmed };
+      }
+    }
+    return { peerE164: null, peerJid: trimmed };
   }
   const normalized = normalizePhone(trimmed);
   if (!/^\d+$/.test(normalized)) {
     return null;
   }
-  return `${normalized}@s.whatsapp.net`;
+  return { peerE164: `+${normalized}`, peerJid: `${normalized}@s.whatsapp.net` };
 }

@@ -51,6 +51,7 @@ export function parseRawMessage(rawMsg: {
     reaction_target_id: reaction.targetId,
     revoked_target_id: protoEvent.revokedTargetId,
     edited_from_id: protoEvent.editedFromId,
+    peer_e164: null,
     created_at: Date.now(),
   };
 }

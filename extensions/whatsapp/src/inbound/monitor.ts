@@ -618,11 +618,12 @@ export async function attachWebInboxToSocket(
         continue;
       }
 
-      if (inbound.id && (enriched.mediaPath || enriched.mediaType || enriched.mediaFileName)) {
+      if (inbound.id) {
         emitEnrichedWhatsAppMessage({
           id: inbound.id,
           accountId: options.accountId,
           remoteJid: inbound.remoteJid,
+          peerE164: !inbound.group && inbound.from ? inbound.from : undefined,
           fromMe: Boolean(msg.key?.fromMe),
           mediaPath: enriched.mediaPath,
           mediaType: enriched.mediaType,

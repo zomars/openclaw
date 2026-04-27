@@ -93,12 +93,14 @@ export function emitRawWhatsAppMessage(accountId: string, msg: unknown): void {
   }
 }
 
-// Enriched message subscribers — fire after media download, so subscribers see
-// the local mediaPath/mediaType/mediaFileName for any attachments.
+// Enriched message subscribers — fire after inbound is normalized (E.164 resolved
+// from any LID mapping) and media is downloaded. Subscribers see the resolved
+// peerE164 and the local mediaPath/mediaType/mediaFileName when present.
 export type EnrichedWhatsAppMessage = {
   id: string;
   accountId: string;
   remoteJid: string;
+  peerE164?: string; // resolved E.164 of the conversation peer (DMs only)
   fromMe: boolean;
   mediaPath?: string;
   mediaType?: string;

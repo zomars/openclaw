@@ -535,6 +535,14 @@ const plugin = {
       if (!stored) {
         return;
       }
+      // Eagerly populate peer_e164 when the chat_jid is already in @s.whatsapp.net form
+      // (the digits before @ are the E.164 without the +).
+      if (!stored.peer_e164 && stored.chat_jid.endsWith("@s.whatsapp.net")) {
+        const digits = stored.chat_jid.split("@")[0];
+        if (digits && /^\d+$/.test(digits)) {
+          stored.peer_e164 = `+${digits}`;
+        }
+      }
       db.storeMessage(stored).catch((err) => {
         console.error("[lead-bot] Failed to store message:", err);
       });
@@ -555,6 +563,7 @@ const plugin = {
       id: string;
       accountId: string;
       remoteJid: string;
+      peerE164?: string;
       fromMe: boolean;
       mediaPath?: string;
       mediaType?: string;
@@ -572,13 +581,21 @@ const plugin = {
         return;
       }
       try {
-        db.updateMessageMediaSync(msg.id, {
-          mediaPath: msg.mediaPath ?? null,
-          mediaType: msg.mediaType ?? null,
-          mediaFileName: msg.mediaFileName ?? null,
-        });
+        if (msg.mediaPath || msg.mediaType || msg.mediaFileName) {
+          db.updateMessageMediaSync(msg.id, {
+            mediaPath: msg.mediaPath ?? null,
+            mediaType: msg.mediaType ?? null,
+            mediaFileName: msg.mediaFileName ?? null,
+          });
+        }
+        // Backfill peer_e164 for the entire chat_jid once we know the resolved E.164.
+        // This is the LID → E.164 bridge: chat_jid stays the @lid form for stable joins,
+        // peer_e164 makes the conversation queryable by phone number.
+        if (msg.peerE164) {
+          db.setPeerE164ByChatJidSync(msg.remoteJid, msg.peerE164);
+        }
       } catch (err) {
-        console.error("[lead-bot] Failed to update media on message:", err);
+        console.error("[lead-bot] Failed to update enriched fields on message:", err);
       }
     };
     enrichedSubscribers.add(enrichedCallback);

@@ -32,6 +32,7 @@ import {
   MIGRATE_V7_TO_V8_DDL,
   MIGRATE_V8_TO_V9_DDL,
   MIGRATE_V9_TO_V10_DDL,
+  MIGRATE_V10_TO_V11_DDL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -148,6 +149,21 @@ export class SqliteDatabase implements DatabaseInterface {
       if (versionRow.version < 10) {
         // v9→v10: add reaction/revoke/edit relationship columns
         for (const stmt of MIGRATE_V9_TO_V10_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
+      }
+      if (versionRow.version < 11) {
+        // v10→v11: add peer_e164 column + index for E.164-keyed lookups (LID-aware)
+        for (const stmt of MIGRATE_V10_TO_V11_DDL.split(";")) {
           const trimmed = stmt.trim();
           if (trimmed) {
             try {
@@ -842,8 +858,8 @@ export class SqliteDatabase implements DatabaseInterface {
   private _insertMessageStmt?: ReturnType<Database.Database["prepare"]>;
   private get insertMessageStmt() {
     return (this._insertMessageStmt ??= this.db.prepare(
-      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, from_me, timestamp, content, message_type, media_type, media_filename, media_size, media_path, reaction_emoji, reaction_target_id, revoked_target_id, edited_from_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, from_me, timestamp, content, message_type, media_type, media_filename, media_size, media_path, reaction_emoji, reaction_target_id, revoked_target_id, edited_from_id, peer_e164, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ));
   }
 
@@ -864,8 +880,28 @@ export class SqliteDatabase implements DatabaseInterface {
       msg.reaction_target_id,
       msg.revoked_target_id,
       msg.edited_from_id,
+      msg.peer_e164,
       msg.created_at,
     );
+  }
+
+  // Backfill peer_e164 for all rows of a given chat_jid that don't yet have it set.
+  // Used when message_received fires after the raw insert and we know the resolved E.164.
+  setPeerE164ByChatJidSync(chatJid: string, peerE164: string): void {
+    this.db
+      .prepare(
+        "UPDATE messages SET peer_e164 = ? WHERE chat_jid = ? AND (peer_e164 IS NULL OR peer_e164 = '')",
+      )
+      .run(peerE164, chatJid);
+  }
+
+  // Synchronous reader keyed by E.164 (uses idx_messages_peer_e164).
+  getMessagesByPeerE164Sync(peerE164: string, limit = 100): StoredMessage[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM messages WHERE peer_e164 = ? ORDER BY timestamp ASC LIMIT ?",
+      )
+      .all(peerE164, limit) as StoredMessage[];
   }
 
   private _updateMediaStmt?: ReturnType<Database.Database["prepare"]>;

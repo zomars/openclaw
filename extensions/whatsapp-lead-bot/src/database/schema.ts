@@ -140,6 +140,7 @@ export interface StoredMessage {
   reaction_target_id: string | null; // id of the message this reaction targets
   revoked_target_id: string | null; // when this message is a REVOKE protocolMessage, the target msg id
   edited_from_id: string | null; // when this message is a MESSAGE_EDIT, the original msg id (new content lives in `content`)
+  peer_e164: string | null; // resolved E.164 of the conversation peer (set when known; LID conversations have @lid in chat_jid)
   created_at: number;
 }
 
@@ -160,11 +161,13 @@ CREATE TABLE IF NOT EXISTS messages (
   reaction_target_id TEXT,
   revoked_target_id TEXT,
   edited_from_id TEXT,
+  peer_e164 TEXT,
   created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_messages_peer_e164 ON messages(peer_e164, timestamp);
 `;
 
 export const MIGRATE_V7_TO_V8_DDL = `
@@ -184,7 +187,12 @@ ALTER TABLE messages ADD COLUMN revoked_target_id TEXT;
 ALTER TABLE messages ADD COLUMN edited_from_id TEXT;
 `;
 
-export const SCHEMA_VERSION = 10;
+export const MIGRATE_V10_TO_V11_DDL = `
+ALTER TABLE messages ADD COLUMN peer_e164 TEXT;
+CREATE INDEX IF NOT EXISTS idx_messages_peer_e164 ON messages(peer_e164, timestamp);
+`;
+
+export const SCHEMA_VERSION = 11;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking

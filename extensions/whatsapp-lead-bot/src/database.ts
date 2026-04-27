@@ -108,6 +108,8 @@ export interface MessageStore {
   ): Promise<StoredMessage[]>;
   getMessagesSince(chatJid: string, sinceTimestamp: number): Promise<StoredMessage[]>;
   getMessagesSync(chatJid: string, limit?: number): StoredMessage[];
+  getMessagesByPeerE164Sync(peerE164: string, limit?: number): StoredMessage[];
+  setPeerE164ByChatJidSync(chatJid: string, peerE164: string): void;
   updateMessageMediaSync(
     id: string,
     media: { mediaPath?: string | null; mediaType?: string | null; mediaFileName?: string | null },

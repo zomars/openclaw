@@ -279,6 +279,7 @@ describe("System / Operations Stories", () => {
       reaction_target_id: null,
       revoked_target_id: null,
       edited_from_id: null,
+      peer_e164: null,
       created_at: now,
     });
 
@@ -300,6 +301,7 @@ describe("System / Operations Stories", () => {
       reaction_target_id: null,
       revoked_target_id: null,
       edited_from_id: null,
+      peer_e164: null,
         created_at: now,
       },
       {
@@ -318,6 +320,7 @@ describe("System / Operations Stories", () => {
       reaction_target_id: null,
       revoked_target_id: null,
       edited_from_id: null,
+      peer_e164: null,
         created_at: now,
       },
     ]);
