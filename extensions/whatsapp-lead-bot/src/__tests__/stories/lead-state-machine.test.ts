@@ -261,7 +261,10 @@ describe("allowed-tools tool gating", () => {
 });
 
 describe("buildStatePromptContext", () => {
-  it("includes the state name and the global guardrail rules in every prompt", () => {
+  it("includes the state name in every prompt", () => {
+    // Global rules live in the workspace system prompt (AGENTS.md / SOUL.md /
+    // SALES.md), not in the per-turn injection. Tool gating is enforced by
+    // the before-tool-call hook, not by repeating "PROHIBIDO" each turn.
     for (const state of [
       "NEW",
       "AWAITING_NAME",
@@ -276,9 +279,7 @@ describe("buildStatePromptContext", () => {
       "HANDED_OFF",
     ] as const) {
       const ctx = buildStatePromptContext(state);
-      expect(ctx).toContain(`ESTADO ACTUAL: ${state}`);
-      expect(ctx).toContain("REGLAS GLOBALES");
-      expect(ctx).toContain("PROHIBIDO escribir precios");
+      expect(ctx).toContain(`Estado: ${state}`);
     }
   });
 
