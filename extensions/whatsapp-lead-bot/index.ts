@@ -16,6 +16,7 @@ import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
 import { createBeforePromptBuildHandler } from "./src/hooks/before-prompt-build.js";
 import { createBeforeToolCallHandler } from "./src/hooks/before-tool-call.js";
+import { ViolationTracker } from "./src/hooks/violation-tracker.js";
 import { HandoffInterceptor } from "./src/hooks/handoff-interceptor.js";
 import { MessageQueue } from "./src/hooks/message-queue.js";
 import { createMessageReceivedHandler } from "./src/hooks/message-received.js";
@@ -310,7 +311,48 @@ const plugin = {
 
     api.on("message_sent", withContext(getRuntime, createMessageSentHandler)({ messageQueue }));
 
-    api.on("before_tool_call", createBeforeToolCallHandler({ dryRun: false, db }));
+    const violationTracker = new ViolationTracker();
+    api.on(
+      "before_tool_call",
+      createBeforeToolCallHandler({
+        dryRun: false,
+        db,
+        violations: violationTracker,
+        pricingStrikeThreshold: 2,
+        onPricingEscalation: async ({ phone, hit, blockedText }) => {
+          const lead = await db.getLeadByPhone(phone);
+          if (!lead) {
+            return;
+          }
+          // Customer ack — same canonical text used by send_handoff_to_ale.
+          await runtime.sendMessage(phone, {
+            text: "Permítame un momento, le confirmo con un asesor.",
+            metadata: { openclawInitiated: true, source: "guardrail-escalation" },
+          });
+          await handoffManager.triggerHandoff(lead.id, "guardrail_pricing_repeat", "tool");
+          try {
+            await labelService.applyStatus(phone, "handed_off", runtime);
+          } catch (err) {
+            console.error(`[guardrail-escalation] Failed to apply HUMANO label: ${String(err)}`);
+          }
+          // Notify Ale with the blocked text for review.
+          const summary =
+            `🚨 Guardrail: ${lead.name || phone} (${phone}) tuvo 2+ intentos de mensaje con precios. ` +
+            `Patrón: ${hit.pattern}. Texto bloqueado: "${blockedText}". ` +
+            "El bot quedó pausado. Continúa la conversación.";
+          for (const agentPhone of config.agentNumbers) {
+            try {
+              await runtime.sendMessage(agentPhone, {
+                text: summary,
+                metadata: { openclawInitiated: true, source: "guardrail-escalation" },
+              });
+            } catch (err) {
+              console.error(`[guardrail-escalation] Notify ${agentPhone} failed: ${String(err)}`);
+            }
+          }
+        },
+      }),
+    );
     api.on("before_prompt_build", createBeforePromptBuildHandler({ db }));
 
     console.log("[whatsapp-lead-bot] Hooks registered");

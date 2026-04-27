@@ -1,5 +1,5 @@
 /**
- * before_tool_call hook — two-layer guardrail.
+ * before_tool_call hook — three-layer guardrail.
  *
  * Layer 1 (pricing): block any `message` tool call whose text contains
  * pricing, financing, panel counts, kWh, or percentages. Tells the LLM to
@@ -9,7 +9,10 @@
  * current state. Prevents the LLM from skipping qualification steps even
  * when the prompt fails to constrain it.
  *
- * Future slice 5 adds: strike counter + escalation on repeat violations.
+ * Layer 3 (strikes + escalation): increment a per-lead counter on every
+ * pricing block. On the second strike in the same conversation, escalate
+ * to a human via the injected onPricingEscalation callback (which calls
+ * handoffManager + sends the canonical ack and notifies agent numbers).
  */
 
 import type { Database } from "../database.js";
@@ -17,6 +20,14 @@ import { allowedToolsForState, isToolAllowedInState } from "../flow/allowed-tool
 import { computeLeadState, leadStateInputFromRow, type LeadState } from "../flow/state.js";
 import type { PluginHookBeforeToolCallEvent, PluginHookBeforeToolCallResult } from "../types.js";
 import { phoneFromSessionKey } from "./before-prompt-build.js";
+import type { ViolationTracker } from "./violation-tracker.js";
+
+export interface PricingEscalationContext {
+  phone: string;
+  hit: PricingFilterHit;
+  attemptCount: number;
+  blockedText: string;
+}
 
 export interface BeforeToolCallHandlerDeps {
   /**
@@ -29,6 +40,24 @@ export interface BeforeToolCallHandlerDeps {
    * omitted, only the pricing guardrail is enforced.
    */
   db?: Database;
+  /**
+   * Optional violation tracker for strike-based escalation. When omitted, the
+   * pricing guardrail blocks but never escalates.
+   */
+  violations?: ViolationTracker;
+  /**
+   * Number of pricing strikes after which escalation fires (default 2).
+   */
+  pricingStrikeThreshold?: number;
+  /**
+   * Called when a lead crosses the pricing strike threshold. Implementations
+   * typically: (1) trigger handoff via handoffManager, (2) send the canonical
+   * "permítame un momento" ack to the customer, (3) notify Ale via agent
+   * numbers with the blocked text + lead context. Errors are logged and
+   * swallowed — escalation is best-effort and must never reflect failure
+   * back to the LLM as a tool error.
+   */
+  onPricingEscalation?: (ctx: PricingEscalationContext) => Promise<void>;
 }
 
 const FORBIDDEN_PRICING_PATTERNS: { name: string; re: RegExp }[] = [
@@ -156,11 +185,25 @@ export function createBeforeToolCallHandler(deps: BeforeToolCallHandlerDeps = {}
 
     const text = extractMessageText(event.params);
     if (!text) {
+      // Successful non-text message tool call → reset strike counter for this lead.
+      if (deps.violations && ctx?.sessionKey) {
+        const phone = phoneFromSessionKey(ctx.sessionKey);
+        if (phone) {
+          deps.violations.reset(phone);
+        }
+      }
       return;
     }
 
     const hit = checkPricingPatterns(text);
     if (!hit) {
+      // Clean message tool call → reset strike counter for this lead.
+      if (deps.violations && ctx?.sessionKey) {
+        const phone = phoneFromSessionKey(ctx.sessionKey);
+        if (phone) {
+          deps.violations.reset(phone);
+        }
+      }
       return;
     }
 
@@ -171,9 +214,45 @@ export function createBeforeToolCallHandler(deps: BeforeToolCallHandlerDeps = {}
       return;
     }
 
+    // Layer 3: strike counting + escalation.
+    let attemptCount = 1;
+    if (deps.violations && ctx?.sessionKey) {
+      const phone = phoneFromSessionKey(ctx.sessionKey);
+      if (phone) {
+        attemptCount = deps.violations.increment(phone);
+        const threshold = deps.pricingStrikeThreshold ?? 2;
+        if (attemptCount >= threshold) {
+          console.warn(
+            `[before-tool-call:guardrail] ESCALATING after ${attemptCount} strikes for ${phone}: pattern=${hit.pattern}`,
+          );
+          if (deps.onPricingEscalation) {
+            try {
+              await deps.onPricingEscalation({
+                phone,
+                hit,
+                attemptCount,
+                blockedText: text,
+              });
+            } catch (err) {
+              console.error(
+                `[before-tool-call:guardrail] Escalation callback failed: ${String(err)}`,
+              );
+            }
+          }
+          deps.violations.reset(phone);
+          return {
+            block: true,
+            blockReason:
+              "Mensaje bloqueado y conversación escalada a un asesor humano por intentos repetidos de redactar precios. " +
+              "No envíes más mensajes a este lead — el humano se hará cargo.",
+          };
+        }
+      }
+    }
+
     const blockReason = buildBlockReason(hit);
     console.warn(
-      `[before-tool-call:guardrail] BLOCKED message: pattern=${hit.pattern} match="${hit.match}"`,
+      `[before-tool-call:guardrail] BLOCKED message (strike ${attemptCount}): pattern=${hit.pattern} match="${hit.match}"`,
     );
     return { block: true, blockReason };
   };
