@@ -50,3 +50,23 @@ export interface PluginHookBeforeToolCallResult {
   block?: boolean;
   blockReason?: string;
 }
+
+export interface PluginHookBeforePromptBuildEvent {
+  prompt: string;
+  messages: unknown[];
+}
+
+export interface PluginHookBeforePromptBuildResult {
+  systemPrompt?: string;
+  prependContext?: string;
+  prependSystemContext?: string;
+  appendSystemContext?: string;
+}
+
+export interface PluginHookAgentContext {
+  runId?: string;
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  channelId?: string;
+}

@@ -1,14 +1,22 @@
 /**
- * before_tool_call hook — guardrail against hallucinated pricing in `message` tool.
+ * before_tool_call hook — two-layer guardrail.
  *
- * Phase 1 (slice 1): block any `message` tool call whose text contains pricing,
- * financing, panel counts, kWh, or percentages. Tells the LLM to use a blinded
- * tool instead.
+ * Layer 1 (pricing): block any `message` tool call whose text contains
+ * pricing, financing, panel counts, kWh, or percentages. Tells the LLM to
+ * use a blinded tool instead.
  *
- * Future slices add: strike counter + escalation, tool gating per state.
+ * Layer 2 (tool gating): block tools that are not allowed in the lead's
+ * current state. Prevents the LLM from skipping qualification steps even
+ * when the prompt fails to constrain it.
+ *
+ * Future slice 5 adds: strike counter + escalation on repeat violations.
  */
 
+import type { Database } from "../database.js";
+import { allowedToolsForState, isToolAllowedInState } from "../flow/allowed-tools.js";
+import { computeLeadState, leadStateInputFromRow, type LeadState } from "../flow/state.js";
 import type { PluginHookBeforeToolCallEvent, PluginHookBeforeToolCallResult } from "../types.js";
+import { phoneFromSessionKey } from "./before-prompt-build.js";
 
 export interface BeforeToolCallHandlerDeps {
   /**
@@ -16,6 +24,11 @@ export interface BeforeToolCallHandlerDeps {
    * rollout to surface false positives before enabling enforcement.
    */
   dryRun?: boolean;
+  /**
+   * Optional DB so the hook can compute the lead state for tool gating. When
+   * omitted, only the pricing guardrail is enforced.
+   */
+  db?: Database;
 }
 
 const FORBIDDEN_PRICING_PATTERNS: { name: string; re: RegExp }[] = [
@@ -72,10 +85,71 @@ export function extractMessageText(params: Record<string, unknown>): string | nu
   return typeof message === "string" && message.length > 0 ? message : null;
 }
 
+async function leadStateForSession(
+  db: Database,
+  sessionKey: string | undefined,
+): Promise<{ state: LeadState; phone: string } | null> {
+  const phone = phoneFromSessionKey(sessionKey);
+  if (!phone) {
+    return null;
+  }
+  const lead = await db.getLeadByPhone(phone);
+  if (!lead) {
+    return null;
+  }
+  const state = computeLeadState(
+    leadStateInputFromRow({
+      status: lead.status,
+      name: lead.name,
+      location: lead.location,
+      ownership: lead.ownership,
+      property_type: lead.property_type,
+      bimonthly_bill: lead.bimonthly_bill,
+      panels_quoted: lead.panels_quoted,
+      receipt_data: lead.receipt_data,
+    }),
+  );
+  return { state, phone };
+}
+
+function buildToolGatingReason(toolName: string, state: LeadState): string {
+  const allowed = allowedToolsForState(state);
+  return (
+    `Tool "${toolName}" no está permitido en estado ${state}. ` +
+    `Tools permitidos ahora: ${allowed.join(", ")}. ` +
+    "El estado lo determina el sistema desde los datos del lead — no lo cambies por tu cuenta. " +
+    "Avanza el flujo guardando el dato correspondiente con save_lead."
+  );
+}
+
+interface SessionContext {
+  sessionKey?: string;
+}
+
 export function createBeforeToolCallHandler(deps: BeforeToolCallHandlerDeps = {}) {
-  return function onBeforeToolCall(
+  return async function onBeforeToolCall(
     event: PluginHookBeforeToolCallEvent,
-  ): PluginHookBeforeToolCallResult | void {
+    ctx?: SessionContext,
+  ): Promise<PluginHookBeforeToolCallResult | void> {
+    // Layer 2: tool gating (only when DB is wired and we can resolve a lead).
+    if (deps.db && ctx?.sessionKey) {
+      const resolved = await leadStateForSession(deps.db, ctx.sessionKey);
+      if (resolved && !isToolAllowedInState(event.toolName, resolved.state)) {
+        const blockReason = buildToolGatingReason(event.toolName, resolved.state);
+        if (deps.dryRun) {
+          console.warn(
+            `[before-tool-call:gating] WOULD BLOCK ${event.toolName} in state=${resolved.state}`,
+          );
+        } else {
+          console.warn(
+            `[before-tool-call:gating] BLOCKED ${event.toolName} in state=${resolved.state}`,
+          );
+          return { block: true, blockReason };
+        }
+      }
+    }
+
+    // Layer 1: pricing guardrail on message tool.
     if (event.toolName !== "message") {
       return;
     }

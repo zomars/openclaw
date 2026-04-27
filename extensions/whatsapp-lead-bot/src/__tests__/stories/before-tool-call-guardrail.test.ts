@@ -92,9 +92,9 @@ describe("extractMessageText", () => {
 });
 
 describe("before_tool_call guardrail handler", () => {
-  it("blocks message tool with pricing in text", () => {
+  it("blocks message tool with pricing in text", async () => {
     const handler = createBeforeToolCallHandler();
-    const result = handler(
+    const result = await handler(
       evt("message", { action: "send", target: "whatsapp:526671", message: "El total es $50,000" }),
     );
     expect(result).toMatchObject({ block: true });
@@ -102,9 +102,9 @@ describe("before_tool_call guardrail handler", () => {
     expect(result?.blockReason).toContain("$50,000");
   });
 
-  it("blocks message tool with financing terms", () => {
+  it("blocks message tool with financing terms", async () => {
     const handler = createBeforeToolCallHandler();
-    const result = handler(
+    const result = await handler(
       evt("message", {
         action: "send",
         target: "whatsapp:526671",
@@ -114,9 +114,9 @@ describe("before_tool_call guardrail handler", () => {
     expect(result?.block).toBe(true);
   });
 
-  it("does not block clean conversational message", () => {
+  it("does not block clean conversational message", async () => {
     const handler = createBeforeToolCallHandler();
-    const result = handler(
+    const result = await handler(
       evt("message", {
         action: "send",
         target: "whatsapp:526671",
@@ -126,21 +126,23 @@ describe("before_tool_call guardrail handler", () => {
     expect(result).toBeUndefined();
   });
 
-  it("does not block other tools", () => {
+  it("does not block other tools", async () => {
     const handler = createBeforeToolCallHandler();
-    const result = handler(evt("save_lead", { phone: "526671", bimonthly_bill: 2500 }));
+    const result = await handler(evt("save_lead", { phone: "526671", bimonthly_bill: 2500 }));
     expect(result).toBeUndefined();
   });
 
-  it("does not block message tool for non-send actions", () => {
+  it("does not block message tool for non-send actions", async () => {
     const handler = createBeforeToolCallHandler();
-    const result = handler(evt("message", { action: "read", threadId: "abc", message: "$50,000" }));
+    const result = await handler(
+      evt("message", { action: "read", threadId: "abc", message: "$50,000" }),
+    );
     expect(result).toBeUndefined();
   });
 
-  it("dryRun mode logs but does not block", () => {
+  it("dryRun mode logs but does not block", async () => {
     const handler = createBeforeToolCallHandler({ dryRun: true });
-    const result = handler(
+    const result = await handler(
       evt("message", {
         action: "send",
         target: "whatsapp:526671",

@@ -14,6 +14,7 @@ import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
 import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
+import { createBeforePromptBuildHandler } from "./src/hooks/before-prompt-build.js";
 import { createBeforeToolCallHandler } from "./src/hooks/before-tool-call.js";
 import { HandoffInterceptor } from "./src/hooks/handoff-interceptor.js";
 import { MessageQueue } from "./src/hooks/message-queue.js";
@@ -309,7 +310,8 @@ const plugin = {
 
     api.on("message_sent", withContext(getRuntime, createMessageSentHandler)({ messageQueue }));
 
-    api.on("before_tool_call", createBeforeToolCallHandler({ dryRun: false }));
+    api.on("before_tool_call", createBeforeToolCallHandler({ dryRun: false, db }));
+    api.on("before_prompt_build", createBeforePromptBuildHandler({ db }));
 
     console.log("[whatsapp-lead-bot] Hooks registered");
 
