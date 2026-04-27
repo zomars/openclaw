@@ -41,6 +41,8 @@ import { parseCFEReceiptTool } from "./src/tools/parse-cfe-receipt.js";
 import { saveLeadTool } from "./src/tools/save-lead.js";
 import { saveReceiptDataTool } from "./src/tools/save-receipt-data.js";
 import { sendDisqualificationTool } from "./src/tools/send-disqualification.js";
+import { sendHandoffToAleTool } from "./src/tools/send-handoff-to-ale.js";
+import { sendReceiptRequestTool } from "./src/tools/send-receipt-request.js";
 import { syncLabelsTool } from "./src/tools/sync-labels.js";
 import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
 const plugin = {
@@ -376,6 +378,14 @@ const plugin = {
       db,
       labelService,
       runtime,
+    });
+    registerPluginTool("Send Receipt Request", sendReceiptRequestTool, { db, runtime });
+    registerPluginTool("Send Handoff to Ale", sendHandoffToAleTool, {
+      db,
+      runtime,
+      labelService,
+      handoffManager,
+      agentNumbers: config.agentNumbers,
     });
     registerPluginTool("Save Receipt Data", saveReceiptDataTool, { db });
     registerPluginTool("Sync Labels", syncLabelsTool, { db, labelService, runtime });
