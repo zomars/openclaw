@@ -22,11 +22,18 @@ export function parseRawMessage(rawMsg: {
     : Math.floor(Date.now() / 1000);
 
   const msg = rawMsg.message;
-  const content = extractTextContent(msg);
   const messageType = msg
     ? (Object.keys(msg).find((k) => k !== "messageContextInfo") ?? "unknown")
     : "unknown";
+  let content = extractTextContent(msg);
   const media = extractMediaMetadata(msg);
+  const reaction = extractReaction(msg);
+  const protoEvent = extractProtocolEvent(msg);
+
+  // Edits carry the new content inside protocolMessage.editedMessage; surface it.
+  if (protoEvent.editedFromId && protoEvent.editedNewContent) {
+    content = protoEvent.editedNewContent;
+  }
 
   return {
     id: msgId,
@@ -40,8 +47,63 @@ export function parseRawMessage(rawMsg: {
     media_filename: media.filename,
     media_size: media.size,
     media_path: null,
+    reaction_emoji: reaction.emoji,
+    reaction_target_id: reaction.targetId,
+    revoked_target_id: protoEvent.revokedTargetId,
+    edited_from_id: protoEvent.editedFromId,
     created_at: Date.now(),
   };
+}
+
+function extractReaction(msg: Record<string, unknown> | undefined): {
+  emoji: string | null;
+  targetId: string | null;
+} {
+  if (!msg) {
+    return { emoji: null, targetId: null };
+  }
+  const r = msg.reactionMessage as
+    | { text?: string; key?: { id?: string } }
+    | undefined;
+  if (!r) {
+    return { emoji: null, targetId: null };
+  }
+  return { emoji: r.text ?? null, targetId: r.key?.id ?? null };
+}
+
+function extractProtocolEvent(msg: Record<string, unknown> | undefined): {
+  revokedTargetId: string | null;
+  editedFromId: string | null;
+  editedNewContent: string | null;
+} {
+  const empty = { revokedTargetId: null, editedFromId: null, editedNewContent: null };
+  if (!msg) {
+    return empty;
+  }
+  const p = msg.protocolMessage as
+    | {
+        type?: number | string;
+        key?: { id?: string };
+        editedMessage?: Record<string, unknown>;
+      }
+    | undefined;
+  if (!p) {
+    return empty;
+  }
+  // Baileys proto: REVOKE = 0, MESSAGE_EDIT = 14 (varies by version; also accept string forms)
+  const isRevoke = p.type === 0 || p.type === "REVOKE";
+  const isEdit = p.type === 14 || p.type === "MESSAGE_EDIT" || Boolean(p.editedMessage);
+  if (isRevoke) {
+    return { ...empty, revokedTargetId: p.key?.id ?? null };
+  }
+  if (isEdit) {
+    return {
+      revokedTargetId: null,
+      editedFromId: p.key?.id ?? null,
+      editedNewContent: p.editedMessage ? extractTextContent(p.editedMessage) : null,
+    };
+  }
+  return empty;
 }
 
 function extractMediaMetadata(msg: Record<string, unknown> | undefined): {

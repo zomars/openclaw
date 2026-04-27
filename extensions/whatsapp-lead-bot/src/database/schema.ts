@@ -136,6 +136,10 @@ export interface StoredMessage {
   media_filename: string | null;
   media_size: number | null; // bytes
   media_path: string | null; // local filesystem path (set by enriched event after download)
+  reaction_emoji: string | null; // when message_type=reactionMessage
+  reaction_target_id: string | null; // id of the message this reaction targets
+  revoked_target_id: string | null; // when this message is a REVOKE protocolMessage, the target msg id
+  edited_from_id: string | null; // when this message is a MESSAGE_EDIT, the original msg id (new content lives in `content`)
   created_at: number;
 }
 
@@ -152,6 +156,10 @@ CREATE TABLE IF NOT EXISTS messages (
   media_filename TEXT,
   media_size INTEGER,
   media_path TEXT,
+  reaction_emoji TEXT,
+  reaction_target_id TEXT,
+  revoked_target_id TEXT,
+  edited_from_id TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -169,7 +177,14 @@ export const MIGRATE_V8_TO_V9_DDL = `
 ALTER TABLE messages ADD COLUMN media_path TEXT;
 `;
 
-export const SCHEMA_VERSION = 9;
+export const MIGRATE_V9_TO_V10_DDL = `
+ALTER TABLE messages ADD COLUMN reaction_emoji TEXT;
+ALTER TABLE messages ADD COLUMN reaction_target_id TEXT;
+ALTER TABLE messages ADD COLUMN revoked_target_id TEXT;
+ALTER TABLE messages ADD COLUMN edited_from_id TEXT;
+`;
+
+export const SCHEMA_VERSION = 10;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking

@@ -37,3 +37,16 @@ export interface PluginHookMessageContext {
   accountId?: string;
   conversationId?: string;
 }
+
+export interface PluginHookBeforeToolCallEvent {
+  toolName: string;
+  params: Record<string, unknown>;
+  runId?: string;
+  toolCallId?: string;
+}
+
+export interface PluginHookBeforeToolCallResult {
+  params?: Record<string, unknown>;
+  block?: boolean;
+  blockReason?: string;
+}

@@ -14,6 +14,7 @@ import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
 import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
+import { createBeforeToolCallHandler } from "./src/hooks/before-tool-call.js";
 import { HandoffInterceptor } from "./src/hooks/handoff-interceptor.js";
 import { MessageQueue } from "./src/hooks/message-queue.js";
 import { createMessageReceivedHandler } from "./src/hooks/message-received.js";
@@ -39,6 +40,7 @@ import { listLeadsTool } from "./src/tools/list-leads.js";
 import { parseCFEReceiptTool } from "./src/tools/parse-cfe-receipt.js";
 import { saveLeadTool } from "./src/tools/save-lead.js";
 import { saveReceiptDataTool } from "./src/tools/save-receipt-data.js";
+import { sendDisqualificationTool } from "./src/tools/send-disqualification.js";
 import { syncLabelsTool } from "./src/tools/sync-labels.js";
 import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
 const plugin = {
@@ -304,6 +306,8 @@ const plugin = {
 
     api.on("message_sent", withContext(getRuntime, createMessageSentHandler)({ messageQueue }));
 
+    api.on("before_tool_call", createBeforeToolCallHandler({ dryRun: false }));
+
     console.log("[whatsapp-lead-bot] Hooks registered");
 
     // Clean up DB on plugin unload
@@ -368,6 +372,11 @@ const plugin = {
       agentNotifier,
     });
     registerPluginTool("Block Lead", blockLeadTool, { db });
+    registerPluginTool("Send Disqualification", sendDisqualificationTool, {
+      db,
+      labelService,
+      runtime,
+    });
     registerPluginTool("Save Receipt Data", saveReceiptDataTool, { db });
     registerPluginTool("Sync Labels", syncLabelsTool, { db, labelService, runtime });
     registerPluginTool("Get Labels", getLabelsTool, { runtime });
@@ -487,9 +496,17 @@ const plugin = {
           mediaParts.push(`path: ${r.media_path}`);
         }
         const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join(", ")}]` : "";
+        let body = (r.content ?? "") + mediaSuffix;
+        if (r.reaction_emoji) {
+          body = `[reaction ${r.reaction_emoji} on ${r.reaction_target_id ?? "?"}]`;
+        } else if (r.revoked_target_id) {
+          body = `[deleted message ${r.revoked_target_id}]`;
+        } else if (r.edited_from_id) {
+          body = `[edited ${r.edited_from_id}] ${body}`;
+        }
         return {
           sender: senderLabel,
-          body: (r.content ?? "") + mediaSuffix,
+          body,
           timestamp: r.timestamp * 1000,
           id: r.id,
         };

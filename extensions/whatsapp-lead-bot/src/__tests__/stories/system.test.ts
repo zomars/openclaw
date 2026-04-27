@@ -275,6 +275,10 @@ describe("System / Operations Stories", () => {
       media_filename: null,
       media_size: null,
       media_path: null,
+      reaction_emoji: null,
+      reaction_target_id: null,
+      revoked_target_id: null,
+      edited_from_id: null,
       created_at: now,
     });
 
@@ -292,6 +296,10 @@ describe("System / Operations Stories", () => {
         media_filename: null,
         media_size: null,
       media_path: null,
+      reaction_emoji: null,
+      reaction_target_id: null,
+      revoked_target_id: null,
+      edited_from_id: null,
         created_at: now,
       },
       {
@@ -306,6 +314,10 @@ describe("System / Operations Stories", () => {
         media_filename: null,
         media_size: null,
       media_path: null,
+      reaction_emoji: null,
+      reaction_target_id: null,
+      revoked_target_id: null,
+      edited_from_id: null,
         created_at: now,
       },
     ]);
