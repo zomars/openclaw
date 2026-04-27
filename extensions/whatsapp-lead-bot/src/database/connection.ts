@@ -30,6 +30,7 @@ import {
   MIGRATE_V5_TO_V6_TABLES,
   MIGRATE_V6_TO_V7_DDL,
   MIGRATE_V7_TO_V8_DDL,
+  MIGRATE_V8_TO_V9_DDL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -116,6 +117,21 @@ export class SqliteDatabase implements DatabaseInterface {
       if (versionRow.version < 8) {
         // v7→v8: add media columns to messages
         for (const stmt of MIGRATE_V7_TO_V8_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
+      }
+      if (versionRow.version < 9) {
+        // v8→v9: add media_path column
+        for (const stmt of MIGRATE_V8_TO_V9_DDL.split(";")) {
           const trimmed = stmt.trim();
           if (trimmed) {
             try {
@@ -810,8 +826,8 @@ export class SqliteDatabase implements DatabaseInterface {
   private _insertMessageStmt?: ReturnType<Database.Database["prepare"]>;
   private get insertMessageStmt() {
     return (this._insertMessageStmt ??= this.db.prepare(
-      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, from_me, timestamp, content, message_type, media_type, media_filename, media_size, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, from_me, timestamp, content, message_type, media_type, media_filename, media_size, media_path, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ));
   }
 
@@ -827,7 +843,31 @@ export class SqliteDatabase implements DatabaseInterface {
       msg.media_type,
       msg.media_filename,
       msg.media_size,
+      msg.media_path,
       msg.created_at,
+    );
+  }
+
+  private _updateMediaStmt?: ReturnType<Database.Database["prepare"]>;
+  private get updateMediaStmt() {
+    return (this._updateMediaStmt ??= this.db.prepare(
+      `UPDATE messages
+         SET media_path = COALESCE(?, media_path),
+             media_type = COALESCE(?, media_type),
+             media_filename = COALESCE(?, media_filename)
+         WHERE id = ?`,
+    ));
+  }
+
+  updateMessageMediaSync(
+    id: string,
+    media: { mediaPath?: string | null; mediaType?: string | null; mediaFileName?: string | null },
+  ): void {
+    this.updateMediaStmt.run(
+      media.mediaPath ?? null,
+      media.mediaType ?? null,
+      media.mediaFileName ?? null,
+      id,
     );
   }
 

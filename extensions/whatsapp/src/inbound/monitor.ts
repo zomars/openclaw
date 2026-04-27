@@ -4,7 +4,7 @@ import { recordChannelActivity } from "openclaw/plugin-sdk/infra-runtime";
 import { logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { getChildLogger } from "openclaw/plugin-sdk/text-runtime";
-import { emitRawWhatsAppMessage } from "../active-listener.js";
+import { emitEnrichedWhatsAppMessage, emitRawWhatsAppMessage } from "../active-listener.js";
 import { readWebSelfIdentity } from "../auth-store.js";
 import { getPrimaryIdentityId, resolveComparableIdentity } from "../identity.js";
 import { DEFAULT_RECONNECT_POLICY, computeBackoff, sleepWithAbort } from "../reconnect.js";
@@ -616,6 +616,18 @@ export async function attachWebInboxToSocket(
       const enriched = await enrichInboundMessage(msg);
       if (!enriched) {
         continue;
+      }
+
+      if (inbound.id && (enriched.mediaPath || enriched.mediaType || enriched.mediaFileName)) {
+        emitEnrichedWhatsAppMessage({
+          id: inbound.id,
+          accountId: options.accountId,
+          remoteJid: inbound.remoteJid,
+          fromMe: Boolean(msg.key?.fromMe),
+          mediaPath: enriched.mediaPath,
+          mediaType: enriched.mediaType,
+          mediaFileName: enriched.mediaFileName,
+        });
       }
 
       const dedupeKey = inbound.id ? `${options.accountId}:${inbound.remoteJid}:${inbound.id}` : "";

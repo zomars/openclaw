@@ -108,6 +108,10 @@ export interface MessageStore {
   ): Promise<StoredMessage[]>;
   getMessagesSince(chatJid: string, sinceTimestamp: number): Promise<StoredMessage[]>;
   getMessagesSync(chatJid: string, limit?: number): StoredMessage[];
+  updateMessageMediaSync(
+    id: string,
+    media: { mediaPath?: string | null; mediaType?: string | null; mediaFileName?: string | null },
+  ): void;
 }
 
 export interface HandoffLog {

@@ -39,6 +39,7 @@ export function parseRawMessage(rawMsg: {
     media_type: media.mimetype,
     media_filename: media.filename,
     media_size: media.size,
+    media_path: null,
     created_at: Date.now(),
   };
 }

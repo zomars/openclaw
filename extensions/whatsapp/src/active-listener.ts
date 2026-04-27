@@ -93,6 +93,41 @@ export function emitRawWhatsAppMessage(accountId: string, msg: unknown): void {
   }
 }
 
+// Enriched message subscribers — fire after media download, so subscribers see
+// the local mediaPath/mediaType/mediaFileName for any attachments.
+export type EnrichedWhatsAppMessage = {
+  id: string;
+  accountId: string;
+  remoteJid: string;
+  fromMe: boolean;
+  mediaPath?: string;
+  mediaType?: string;
+  mediaFileName?: string;
+};
+type EnrichedMessageCallback = (msg: EnrichedWhatsAppMessage) => void;
+const ENRICHED_MESSAGE_SUBSCRIBERS_KEY = Symbol.for("openclaw.whatsapp.enrichedMessageSubscribers");
+type EnrichedSubscribersState = { subscribers: Set<EnrichedMessageCallback> };
+const enrichedG = globalThis as unknown as Record<symbol, EnrichedSubscribersState | undefined>;
+if (!enrichedG[ENRICHED_MESSAGE_SUBSCRIBERS_KEY]) {
+  enrichedG[ENRICHED_MESSAGE_SUBSCRIBERS_KEY] = { subscribers: new Set<EnrichedMessageCallback>() };
+}
+const enrichedMessageSubscribers = enrichedG[ENRICHED_MESSAGE_SUBSCRIBERS_KEY].subscribers;
+
+export function onEnrichedWhatsAppMessage(cb: EnrichedMessageCallback): () => void {
+  enrichedMessageSubscribers.add(cb);
+  return () => enrichedMessageSubscribers.delete(cb);
+}
+
+export function emitEnrichedWhatsAppMessage(msg: EnrichedWhatsAppMessage): void {
+  for (const cb of enrichedMessageSubscribers) {
+    try {
+      cb(msg);
+    } catch (err) {
+      console.error("[whatsapp] Enriched message subscriber error:", err);
+    }
+  }
+}
+
 // WhatsApp shares a live Baileys socket between inbound and outbound runtime
 // chunks. Keep this on a direct globalThis symbol lookup; the generic
 // singleton helper was previously inlined during code-splitting and split the

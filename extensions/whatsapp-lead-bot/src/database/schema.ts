@@ -135,6 +135,7 @@ export interface StoredMessage {
   media_type: string | null; // mimetype, e.g. "image/jpeg", "audio/ogg"
   media_filename: string | null;
   media_size: number | null; // bytes
+  media_path: string | null; // local filesystem path (set by enriched event after download)
   created_at: number;
 }
 
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS messages (
   media_type TEXT,
   media_filename TEXT,
   media_size INTEGER,
+  media_path TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -163,7 +165,11 @@ ALTER TABLE messages ADD COLUMN media_filename TEXT;
 ALTER TABLE messages ADD COLUMN media_size INTEGER;
 `;
 
-export const SCHEMA_VERSION = 8;
+export const MIGRATE_V8_TO_V9_DDL = `
+ALTER TABLE messages ADD COLUMN media_path TEXT;
+`;
+
+export const SCHEMA_VERSION = 9;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking

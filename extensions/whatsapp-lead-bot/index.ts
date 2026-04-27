@@ -406,6 +406,47 @@ const plugin = {
     }
     console.log("[lead-bot] Raw WhatsApp message store registered");
 
+    // Subscribe to enriched events (post-media-download) so we can backfill
+    // media_path/media_type/media_filename on the existing message row.
+    const ENRICHED_MESSAGE_SUBSCRIBERS_KEY = Symbol.for(
+      "openclaw.whatsapp.enrichedMessageSubscribers",
+    );
+    type EnrichedWhatsAppMessage = {
+      id: string;
+      accountId: string;
+      remoteJid: string;
+      fromMe: boolean;
+      mediaPath?: string;
+      mediaType?: string;
+      mediaFileName?: string;
+    };
+    type EnrichedMessageCallback = (msg: EnrichedWhatsAppMessage) => void;
+    type EnrichedSubscribersState = { subscribers: Set<EnrichedMessageCallback> };
+    const enrG = globalThis as unknown as Record<symbol, EnrichedSubscribersState | undefined>;
+    if (!enrG[ENRICHED_MESSAGE_SUBSCRIBERS_KEY]) {
+      enrG[ENRICHED_MESSAGE_SUBSCRIBERS_KEY] = { subscribers: new Set<EnrichedMessageCallback>() };
+    }
+    const enrichedSubscribers = enrG[ENRICHED_MESSAGE_SUBSCRIBERS_KEY].subscribers;
+    const enrichedCallback: EnrichedMessageCallback = (msg) => {
+      if (config.whatsappAccounts.length > 0 && !config.whatsappAccounts.includes(msg.accountId)) {
+        return;
+      }
+      try {
+        db.updateMessageMediaSync(msg.id, {
+          mediaPath: msg.mediaPath ?? null,
+          mediaType: msg.mediaType ?? null,
+          mediaFileName: msg.mediaFileName ?? null,
+        });
+      } catch (err) {
+        console.error("[lead-bot] Failed to update media on message:", err);
+      }
+    };
+    enrichedSubscribers.add(enrichedCallback);
+    if (typeof apiWithUnload.onUnload === "function") {
+      apiWithUnload.onUnload(() => enrichedSubscribers.delete(enrichedCallback));
+    }
+    console.log("[lead-bot] Enriched WhatsApp media updater registered");
+
     // Register a DM history loader so the whatsapp plugin can inject conversation history
     // into the agent context for direct messages. Same Symbol-based contract.
     const DM_HISTORY_LOADER_KEY = Symbol.for("openclaw.whatsapp.dmHistoryLoader");
@@ -430,9 +471,20 @@ const plugin = {
       }
       return rows.map((r) => {
         const senderLabel = r.from_me === 1 ? "me" : (r.sender_jid ?? r.chat_jid);
-        const mediaSuffix = r.media_type
-          ? ` [${r.media_type}${r.media_filename ? `: ${r.media_filename}` : ""}${r.media_size ? `, ${r.media_size} bytes` : ""}]`
-          : "";
+        const mediaParts: string[] = [];
+        if (r.media_type) {
+          mediaParts.push(r.media_type);
+        }
+        if (r.media_filename) {
+          mediaParts.push(r.media_filename);
+        }
+        if (r.media_size) {
+          mediaParts.push(`${r.media_size} bytes`);
+        }
+        if (r.media_path) {
+          mediaParts.push(`path: ${r.media_path}`);
+        }
+        const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join(", ")}]` : "";
         return {
           sender: senderLabel,
           body: (r.content ?? "") + mediaSuffix,

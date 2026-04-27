@@ -274,6 +274,7 @@ describe("System / Operations Stories", () => {
       media_type: null,
       media_filename: null,
       media_size: null,
+      media_path: null,
       created_at: now,
     });
 
@@ -290,6 +291,7 @@ describe("System / Operations Stories", () => {
         media_type: null,
         media_filename: null,
         media_size: null,
+      media_path: null,
         created_at: now,
       },
       {
@@ -303,6 +305,7 @@ describe("System / Operations Stories", () => {
         media_type: null,
         media_filename: null,
         media_size: null,
+      media_path: null,
         created_at: now,
       },
     ]);
