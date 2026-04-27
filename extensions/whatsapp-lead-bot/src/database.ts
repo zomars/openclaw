@@ -107,6 +107,7 @@ export interface MessageStore {
     opts?: { limit?: number; before?: number },
   ): Promise<StoredMessage[]>;
   getMessagesSince(chatJid: string, sinceTimestamp: number): Promise<StoredMessage[]>;
+  getMessagesSync(chatJid: string, limit?: number): StoredMessage[];
 }
 
 export interface HandoffLog {

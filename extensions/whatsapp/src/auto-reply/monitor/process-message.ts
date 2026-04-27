@@ -12,6 +12,34 @@ import {
   resolveVisibleWhatsAppReplyContext,
   type GroupHistoryEntry,
 } from "./inbound-context.js";
+
+// Optional DM history loader — registered by other plugins (e.g. whatsapp-lead-bot)
+// via a globalThis Symbol. If present, we call it to enrich DM context with stored history.
+const DM_HISTORY_LOADER_KEY = Symbol.for("openclaw.whatsapp.dmHistoryLoader");
+type DmHistoryLoader = (params: {
+  accountId: string;
+  peerJid: string;
+  peerE164: string;
+}) => GroupHistoryEntry[] | undefined;
+type DmHistoryLoaderState = { loader: DmHistoryLoader | null };
+
+function loadDmHistoryFromGlobalLoader(params: {
+  accountId: string;
+  peerJid: string;
+  peerE164: string;
+}): GroupHistoryEntry[] | undefined {
+  const g = globalThis as unknown as Record<symbol, DmHistoryLoaderState | undefined>;
+  const state = g[DM_HISTORY_LOADER_KEY];
+  if (!state?.loader) {
+    return undefined;
+  }
+  try {
+    return state.loader(params);
+  } catch (err) {
+    console.error("[whatsapp] DM history loader threw:", err);
+    return undefined;
+  }
+}
 import {
   buildWhatsAppInboundContext,
   dispatchWhatsAppBufferedReply,
@@ -289,11 +317,21 @@ export async function processMessage(params: {
     pipelineResponsePrefix: replyPipeline.responsePrefix,
   });
 
+  const dmHistory =
+    params.msg.chatType === "direct"
+      ? loadDmHistoryFromGlobalLoader({
+          accountId: params.msg.accountId,
+          peerJid: params.msg.chatId,
+          peerE164: params.msg.from,
+        })
+      : undefined;
+
   const ctxPayload = buildWhatsAppInboundContext({
     combinedBody,
     commandAuthorized,
     conversationId,
     groupHistory: visibleGroupHistory,
+    dmHistory,
     groupMemberRoster: params.groupMemberNames.get(params.groupHistoryKey),
     msg: params.msg,
     route: params.route,

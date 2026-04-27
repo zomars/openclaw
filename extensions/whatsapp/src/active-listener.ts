@@ -67,9 +67,16 @@ export type ActiveWebListener = {
   close?: () => Promise<void>;
 };
 
-// Raw message subscribers — plugins can register to receive every WAMessage
+// Raw message subscribers — plugins can register to receive every WAMessage.
+// Backed by a globalThis Symbol so subscribers from other plugin bundles share the same Set.
 type RawMessageCallback = (accountId: string, msg: unknown) => void;
-const rawMessageSubscribers = new Set<RawMessageCallback>();
+const RAW_MESSAGE_SUBSCRIBERS_KEY = Symbol.for("openclaw.whatsapp.rawMessageSubscribers");
+type RawSubscribersState = { subscribers: Set<RawMessageCallback> };
+const rawG = globalThis as unknown as Record<symbol, RawSubscribersState | undefined>;
+if (!rawG[RAW_MESSAGE_SUBSCRIBERS_KEY]) {
+  rawG[RAW_MESSAGE_SUBSCRIBERS_KEY] = { subscribers: new Set<RawMessageCallback>() };
+}
+const rawMessageSubscribers = rawG[RAW_MESSAGE_SUBSCRIBERS_KEY].subscribers;
 
 export function onRawWhatsAppMessage(cb: RawMessageCallback): () => void {
   rawMessageSubscribers.add(cb);

@@ -132,6 +132,9 @@ export interface StoredMessage {
   timestamp: number; // epoch seconds
   content: string | null;
   message_type: string | null;
+  media_type: string | null; // mimetype, e.g. "image/jpeg", "audio/ogg"
+  media_filename: string | null;
+  media_size: number | null; // bytes
   created_at: number;
 }
 
@@ -144,6 +147,9 @@ CREATE TABLE IF NOT EXISTS messages (
   timestamp INTEGER NOT NULL,
   content TEXT,
   message_type TEXT,
+  media_type TEXT,
+  media_filename TEXT,
+  media_size INTEGER,
   created_at INTEGER NOT NULL
 );
 
@@ -151,7 +157,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp);
 `;
 
-export const SCHEMA_VERSION = 7;
+export const MIGRATE_V7_TO_V8_DDL = `
+ALTER TABLE messages ADD COLUMN media_type TEXT;
+ALTER TABLE messages ADD COLUMN media_filename TEXT;
+ALTER TABLE messages ADD COLUMN media_size INTEGER;
+`;
+
+export const SCHEMA_VERSION = 8;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking

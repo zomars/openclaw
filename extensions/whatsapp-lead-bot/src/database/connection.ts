@@ -29,6 +29,7 @@ import {
   MIGRATE_V5_TO_V6_DDL,
   MIGRATE_V5_TO_V6_TABLES,
   MIGRATE_V6_TO_V7_DDL,
+  MIGRATE_V7_TO_V8_DDL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -111,6 +112,21 @@ export class SqliteDatabase implements DatabaseInterface {
       if (versionRow.version < 7) {
         // v6→v7: add messages table
         this.db.exec(MIGRATE_V6_TO_V7_DDL);
+      }
+      if (versionRow.version < 8) {
+        // v7→v8: add media columns to messages
+        for (const stmt of MIGRATE_V7_TO_V8_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
       }
       this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
     }
@@ -794,8 +810,8 @@ export class SqliteDatabase implements DatabaseInterface {
   private _insertMessageStmt?: ReturnType<Database.Database["prepare"]>;
   private get insertMessageStmt() {
     return (this._insertMessageStmt ??= this.db.prepare(
-      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, from_me, timestamp, content, message_type, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, from_me, timestamp, content, message_type, media_type, media_filename, media_size, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ));
   }
 
@@ -808,6 +824,9 @@ export class SqliteDatabase implements DatabaseInterface {
       msg.timestamp,
       msg.content,
       msg.message_type,
+      msg.media_type,
+      msg.media_filename,
+      msg.media_size,
       msg.created_at,
     );
   }
@@ -848,5 +867,13 @@ export class SqliteDatabase implements DatabaseInterface {
         "SELECT * FROM messages WHERE chat_jid = ? AND timestamp >= ? ORDER BY timestamp ASC",
       )
       .all(chatJid, sinceTimestamp) as StoredMessage[];
+  }
+
+  // Synchronous reader for hot-path callers (better-sqlite3 is fully synchronous).
+  // Returns oldest-first up to `limit`.
+  getMessagesSync(chatJid: string, limit = 100): StoredMessage[] {
+    return this.db
+      .prepare("SELECT * FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC LIMIT ?")
+      .all(chatJid, limit) as StoredMessage[];
   }
 }

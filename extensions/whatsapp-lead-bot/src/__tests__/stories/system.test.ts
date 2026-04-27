@@ -1,21 +1,33 @@
 import { describe, it, expect } from "vitest";
-import { splitAgentResponse } from "../../hooks/multi-message-splitter.js";
-import { checkLeadContentFilter } from "../../hooks/message-sending.js";
 import { MessageQueue } from "../../hooks/message-queue.js";
-import { createTestDb } from "../helpers/tmp-db.js";
-import { FakeNotifier } from "../helpers/fake-notifier.js";
+import { checkLeadContentFilter } from "../../hooks/message-sending.js";
+import { splitAgentResponse } from "../../hooks/multi-message-splitter.js";
 import { CircuitBreaker } from "../../rate-limit/circuit-breaker.js";
+import { RateLimitCoordinator } from "../../rate-limit/coordinator.js";
 import { GlobalRateLimiter } from "../../rate-limit/global-limiter.js";
 import { RateLimiter } from "../../rate-limit/limiter.js";
-import { RateLimitCoordinator } from "../../rate-limit/coordinator.js";
+import { FakeNotifier } from "../helpers/fake-notifier.js";
+import { createTestDb } from "../helpers/tmp-db.js";
 
 describe("System / Operations Stories", () => {
   it("37. enforces 3-layer rate limiting: circuit breaker → global → per-lead, all atomic via DB transactions", async () => {
     const { db } = createTestDb();
     const notifier = new FakeNotifier();
-    const rateLimiter = new RateLimiter(db, { enabled: true, messagesPerHour: 2, windowMs: 3600000 });
-    const globalLimiter = new GlobalRateLimiter(db, { enabled: true, maxMessagesPerHour: 100, windowMs: 3600000 });
-    const circuitBreaker = new CircuitBreaker(db, { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 5 }, notifier);
+    const rateLimiter = new RateLimiter(db, {
+      enabled: true,
+      messagesPerHour: 2,
+      windowMs: 3600000,
+    });
+    const globalLimiter = new GlobalRateLimiter(db, {
+      enabled: true,
+      maxMessagesPerHour: 100,
+      windowMs: 3600000,
+    });
+    const circuitBreaker = new CircuitBreaker(
+      db,
+      { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 5 },
+      notifier,
+    );
     const coordinator = new RateLimitCoordinator(circuitBreaker, globalLimiter, rateLimiter);
 
     const lead = await db.getOrCreateLead("+5216671000010");
@@ -33,9 +45,21 @@ describe("System / Operations Stories", () => {
     // Create a second lead, exhaust global limit separately
     const { db: db2 } = createTestDb();
     const notifier2 = new FakeNotifier();
-    const globalLimiter2 = new GlobalRateLimiter(db2, { enabled: true, maxMessagesPerHour: 2, windowMs: 3600000 });
-    const rateLimiter2 = new RateLimiter(db2, { enabled: true, messagesPerHour: 100, windowMs: 3600000 });
-    const circuitBreaker2 = new CircuitBreaker(db2, { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 5 }, notifier2);
+    const globalLimiter2 = new GlobalRateLimiter(db2, {
+      enabled: true,
+      maxMessagesPerHour: 2,
+      windowMs: 3600000,
+    });
+    const rateLimiter2 = new RateLimiter(db2, {
+      enabled: true,
+      messagesPerHour: 100,
+      windowMs: 3600000,
+    });
+    const circuitBreaker2 = new CircuitBreaker(
+      db2,
+      { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 5 },
+      notifier2,
+    );
     const coordinator2 = new RateLimitCoordinator(circuitBreaker2, globalLimiter2, rateLimiter2);
     const leadA = await db2.getOrCreateLead("+5216671000011");
 
@@ -48,12 +72,22 @@ describe("System / Operations Stories", () => {
     // Circuit breaker denial
     const { db: db3 } = createTestDb();
     const notifier3 = new FakeNotifier();
-    const cb3 = new CircuitBreaker(db3, { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 5 }, notifier3);
-    const gl3 = new GlobalRateLimiter(db3, { enabled: true, maxMessagesPerHour: 100, windowMs: 3600000 });
+    const cb3 = new CircuitBreaker(
+      db3,
+      { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 5 },
+      notifier3,
+    );
+    const gl3 = new GlobalRateLimiter(db3, {
+      enabled: true,
+      maxMessagesPerHour: 100,
+      windowMs: 3600000,
+    });
     const rl3 = new RateLimiter(db3, { enabled: true, messagesPerHour: 100, windowMs: 3600000 });
     const coord3 = new RateLimitCoordinator(cb3, gl3, rl3);
     // Trip the breaker manually
-    for (let i = 0; i < 5; i++) {await cb3.recordCheck(true);}
+    for (let i = 0; i < 5; i++) {
+      await cb3.recordCheck(true);
+    }
     const leadB = await db3.getOrCreateLead("+5216671000012");
     const rCb = await coord3.checkAndRecord(leadB.id);
     expect(rCb.allowed).toBe(false);
@@ -74,7 +108,10 @@ describe("System / Operations Stories", () => {
     expect(paragraphs.messages).toEqual(["Primero", "Segundo"]);
 
     // Long-message strategy (>500 chars, short lines)
-    const longLines = Array.from({ length: 20 }, (_, i) => `Line ${i + 1} of the long message with more text here.`).join("\n");
+    const longLines = Array.from(
+      { length: 20 },
+      (_, i) => `Line ${i + 1} of the long message with more text here.`,
+    ).join("\n");
     expect(longLines.length).toBeGreaterThan(500);
     const longResult = splitAgentResponse(longLines);
     expect(longResult.isMulti).toBe(true);
@@ -155,9 +192,21 @@ describe("System / Operations Stories", () => {
     });
 
     const handoffManager = new HandoffManager(db, notifier);
-    const rateLimiter = new RateLimiter(db, { enabled: true, messagesPerHour: 10, windowMs: 3600000 });
-    const globalLimiter = new GlobalRateLimiter(db, { enabled: true, maxMessagesPerHour: 1000, windowMs: 3600000 });
-    const circuitBreaker = new CircuitBreaker(db, { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 10 }, notifier);
+    const rateLimiter = new RateLimiter(db, {
+      enabled: true,
+      messagesPerHour: 10,
+      windowMs: 3600000,
+    });
+    const globalLimiter = new GlobalRateLimiter(db, {
+      enabled: true,
+      maxMessagesPerHour: 1000,
+      windowMs: 3600000,
+    });
+    const circuitBreaker = new CircuitBreaker(
+      db,
+      { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 10 },
+      notifier,
+    );
     const coordinator = new RateLimitCoordinator(circuitBreaker, globalLimiter, rateLimiter);
     const mediaHandler = new MediaHandler();
     const agentNotifier = new AgentNotifier(runtime, config);
@@ -165,8 +214,15 @@ describe("System / Operations Stories", () => {
     const handoffInterceptor = new HandoffInterceptor({ agentNotifier });
 
     const handler = createMessageReceivedHandler({
-      db, config, adminHandler, rateLimiter, rateLimitCoordinator: coordinator,
-      mediaHandler, agentNotifier, handoffManager, handoffInterceptor,
+      db,
+      config,
+      adminHandler,
+      rateLimiter,
+      rateLimitCoordinator: coordinator,
+      mediaHandler,
+      agentNotifier,
+      handoffManager,
+      handoffInterceptor,
     });
 
     const getRuntime = () => runtime;
@@ -215,13 +271,40 @@ describe("System / Operations Stories", () => {
       timestamp: now - 2000,
       content: "Hola",
       message_type: "text",
+      media_type: null,
+      media_filename: null,
+      media_size: null,
       created_at: now,
     });
 
     // Batch store
     await db.storeMessages([
-      { id: "msg-2", chat_jid: chatJid, sender_jid: "bot@s.whatsapp.net", from_me: 1, timestamp: now - 1000, content: "Bienvenido", message_type: "text", created_at: now },
-      { id: "msg-3", chat_jid: chatJid, sender_jid: chatJid, from_me: 0, timestamp: now, content: "Gracias", message_type: "text", created_at: now },
+      {
+        id: "msg-2",
+        chat_jid: chatJid,
+        sender_jid: "bot@s.whatsapp.net",
+        from_me: 1,
+        timestamp: now - 1000,
+        content: "Bienvenido",
+        message_type: "text",
+        media_type: null,
+        media_filename: null,
+        media_size: null,
+        created_at: now,
+      },
+      {
+        id: "msg-3",
+        chat_jid: chatJid,
+        sender_jid: chatJid,
+        from_me: 0,
+        timestamp: now,
+        content: "Gracias",
+        message_type: "text",
+        media_type: null,
+        media_filename: null,
+        media_size: null,
+        created_at: now,
+      },
     ]);
 
     // Retrieve all with limit
@@ -286,7 +369,8 @@ describe("System / Operations Stories", () => {
   });
 
   it("44. validates CFE PDFs by checking for CFE RFC before API call, limits to 3 extraction attempts per lead", async () => {
-    const { quickValidateCFE, quickValidateCFEImage } = await import("../../media/pdf-validator.js");
+    const { quickValidateCFE, quickValidateCFEImage } =
+      await import("../../media/pdf-validator.js");
 
     // Image → always valid (needs OCR, can't pre-validate)
     const imgResult = quickValidateCFEImage("/fake/image.jpg");

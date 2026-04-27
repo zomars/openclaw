@@ -375,27 +375,81 @@ const plugin = {
 
     console.log("[whatsapp-lead-bot] Plugin registered successfully");
 
-    // Store ALL WhatsApp messages (inbound + outbound + bot replies) via raw Baileys events
-    const onRawMsg = waFns?.onRawWhatsAppMessage;
-    if (typeof onRawMsg === "function") {
-      const unsub = onRawMsg((acctId: string, rawMsg: unknown) => {
-        if (config.whatsappAccounts.length > 0 && !config.whatsappAccounts.includes(acctId)) {
-          return;
-        }
-        const stored = parseRawMessage(rawMsg as Parameters<typeof parseRawMessage>[0]);
-        if (!stored) {
-          return;
-        }
-        db.storeMessage(stored).catch((err) => {
-          console.error("[lead-bot] Failed to store message:", err);
-        });
-      });
-
-      if (typeof api.onUnload === "function") {
-        api.onUnload(unsub);
-      }
-      console.log("[lead-bot] Raw WhatsApp message store registered");
+    // Store ALL WhatsApp messages (inbound + outbound + bot replies) via raw Baileys events.
+    // The whatsapp plugin emits via a globalThis-backed Set under this Symbol; we subscribe
+    // by adding our callback to the same Set so we receive events regardless of bundle boundaries.
+    const RAW_MESSAGE_SUBSCRIBERS_KEY = Symbol.for("openclaw.whatsapp.rawMessageSubscribers");
+    type RawMessageCallback = (accountId: string, msg: unknown) => void;
+    type RawSubscribersState = { subscribers: Set<RawMessageCallback> };
+    const rawG = globalThis as unknown as Record<symbol, RawSubscribersState | undefined>;
+    if (!rawG[RAW_MESSAGE_SUBSCRIBERS_KEY]) {
+      rawG[RAW_MESSAGE_SUBSCRIBERS_KEY] = { subscribers: new Set<RawMessageCallback>() };
     }
+    const rawSubscribers = rawG[RAW_MESSAGE_SUBSCRIBERS_KEY].subscribers;
+
+    const rawCallback: RawMessageCallback = (acctId, rawMsg) => {
+      if (config.whatsappAccounts.length > 0 && !config.whatsappAccounts.includes(acctId)) {
+        return;
+      }
+      const stored = parseRawMessage(rawMsg as Parameters<typeof parseRawMessage>[0]);
+      if (!stored) {
+        return;
+      }
+      db.storeMessage(stored).catch((err) => {
+        console.error("[lead-bot] Failed to store message:", err);
+      });
+    };
+    rawSubscribers.add(rawCallback);
+    const apiWithUnload = api as unknown as { onUnload?: (fn: () => void) => void };
+    if (typeof apiWithUnload.onUnload === "function") {
+      apiWithUnload.onUnload(() => rawSubscribers.delete(rawCallback));
+    }
+    console.log("[lead-bot] Raw WhatsApp message store registered");
+
+    // Register a DM history loader so the whatsapp plugin can inject conversation history
+    // into the agent context for direct messages. Same Symbol-based contract.
+    const DM_HISTORY_LOADER_KEY = Symbol.for("openclaw.whatsapp.dmHistoryLoader");
+    type DmHistoryEntry = { sender: string; body: string; timestamp?: number; id?: string };
+    type DmHistoryLoader = (params: {
+      accountId: string;
+      peerJid: string;
+      peerE164: string;
+    }) => DmHistoryEntry[] | undefined;
+    type DmHistoryLoaderState = { loader: DmHistoryLoader | null };
+    const histG = globalThis as unknown as Record<symbol, DmHistoryLoaderState | undefined>;
+    if (!histG[DM_HISTORY_LOADER_KEY]) {
+      histG[DM_HISTORY_LOADER_KEY] = { loader: null };
+    }
+    const dmLoader: DmHistoryLoader = ({ accountId, peerJid }) => {
+      if (config.whatsappAccounts.length > 0 && !config.whatsappAccounts.includes(accountId)) {
+        return undefined;
+      }
+      const rows = db.getMessagesSync(peerJid, 200);
+      if (rows.length === 0) {
+        return undefined;
+      }
+      return rows.map((r) => {
+        const senderLabel = r.from_me === 1 ? "me" : (r.sender_jid ?? r.chat_jid);
+        const mediaSuffix = r.media_type
+          ? ` [${r.media_type}${r.media_filename ? `: ${r.media_filename}` : ""}${r.media_size ? `, ${r.media_size} bytes` : ""}]`
+          : "";
+        return {
+          sender: senderLabel,
+          body: (r.content ?? "") + mediaSuffix,
+          timestamp: r.timestamp * 1000,
+          id: r.id,
+        };
+      });
+    };
+    histG[DM_HISTORY_LOADER_KEY].loader = dmLoader;
+    if (typeof apiWithUnload.onUnload === "function") {
+      apiWithUnload.onUnload(() => {
+        if (histG[DM_HISTORY_LOADER_KEY]?.loader === dmLoader) {
+          histG[DM_HISTORY_LOADER_KEY].loader = null;
+        }
+      });
+    }
+    console.log("[lead-bot] DM history loader registered");
   },
 };
 

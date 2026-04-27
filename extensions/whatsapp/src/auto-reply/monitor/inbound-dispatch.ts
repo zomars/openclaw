@@ -86,6 +86,7 @@ export function buildWhatsAppInboundContext(params: {
   commandAuthorized?: boolean;
   conversationId: string;
   groupHistory?: GroupHistoryEntry[];
+  dmHistory?: GroupHistoryEntry[];
   groupMemberRoster?: Map<string, string>;
   msg: WebInboundMsg;
   route: ReturnType<typeof resolveAgentRoute>;
@@ -99,7 +100,13 @@ export function buildWhatsAppInboundContext(params: {
           body: entry.body,
           timestamp: entry.timestamp,
         }))
-      : undefined;
+      : params.dmHistory
+        ? params.dmHistory.map((entry) => ({
+            sender: entry.sender,
+            body: entry.body,
+            timestamp: entry.timestamp,
+          }))
+        : undefined;
 
   return finalizeInboundContext({
     Body: params.combinedBody,
