@@ -5,8 +5,11 @@
  * rate limiting, and follow-ups.
  */
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { sendWebChannelMessage } from "../../src/plugins/runtime/runtime-web-channel-plugin.js";
 import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import { AdminCommandHandler } from "./src/admin/commands.js";
@@ -16,13 +19,15 @@ import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
 import { createBeforePromptBuildHandler } from "./src/hooks/before-prompt-build.js";
 import { createBeforeToolCallHandler } from "./src/hooks/before-tool-call.js";
-import { ViolationTracker } from "./src/hooks/violation-tracker.js";
 import { HandoffInterceptor } from "./src/hooks/handoff-interceptor.js";
 import { MessageQueue } from "./src/hooks/message-queue.js";
 import { createMessageReceivedHandler } from "./src/hooks/message-received.js";
 import { createMessageSendingHandler } from "./src/hooks/message-sending.js";
 import { createMessageSentHandler } from "./src/hooks/message-sent.js";
+import { ViolationTracker } from "./src/hooks/violation-tracker.js";
 import { WhatsAppLabelService } from "./src/labels.js";
+import { parseCFEBill } from "./src/media/cfe-api-client.js";
+import { createPythonCfeXmlDownloader } from "./src/media/cfe-xml-downloader.js";
 import { MediaHandler } from "./src/media/handler.js";
 import { parseRawMessage } from "./src/messages/parse-raw.js";
 import { AgentNotifier } from "./src/notifications/agent-notify.js";
@@ -40,6 +45,7 @@ import { handoffLeadTool } from "./src/tools/handoff-lead.js";
 import { addChatLabelTool, createLabelTool, getLabelsTool } from "./src/tools/label-ops.js";
 import { listLeadsTool } from "./src/tools/list-leads.js";
 import { parseCFEReceiptTool } from "./src/tools/parse-cfe-receipt.js";
+import { processCFEReceiptTool } from "./src/tools/process-cfe-receipt.js";
 import { saveLeadTool } from "./src/tools/save-lead.js";
 import { saveReceiptDataTool } from "./src/tools/save-receipt-data.js";
 import { sendDisqualificationTool } from "./src/tools/send-disqualification.js";
@@ -411,10 +417,10 @@ const plugin = {
       const quoteCalculator = async (
         billId: string,
       ): Promise<{ success: true; quote: QuoteResult } | { success: false; error: string }> => {
-        const result = (await calculateQuoteTool.execute(
+        const result = await calculateQuoteTool.execute(
           { billId },
           { apiKey: supabaseApiKey, apiUrl: config.supabaseQuoteUrl },
-        )) as Record<string, unknown>;
+        );
         if (result.success !== true) {
           return {
             success: false,
@@ -430,11 +436,15 @@ const plugin = {
         const cashPrice = num(q.cashPrice ?? q.cash_price ?? q.precio_contado);
         const financedPrice = num(q.financedPrice ?? q.financed_price ?? q.precio_financiado);
         const annualSavings = num(q.annualSavings ?? q.annual_savings ?? q.ahorro_anual);
-        const annualCost = num(q.annualCost ?? q.annual_cost ?? bill.annual_cost ?? bill.costo_anual);
+        const annualCost = num(
+          q.annualCost ?? q.annual_cost ?? bill.annual_cost ?? bill.costo_anual,
+        );
         const coveragePercent = num(q.coveragePercent ?? q.coverage_percent ?? q.cobertura);
         const panelCount = num(q.panelCount ?? q.panel_count ?? q.paneles);
         const paybackYears = num(q.paybackYears ?? q.payback_years ?? q.roi_anos ?? q.roiYears);
-        const serviceNumber = str(bill.serviceNumber ?? bill.service_number ?? bill.numero_servicio);
+        const serviceNumber = str(
+          bill.serviceNumber ?? bill.service_number ?? bill.numero_servicio,
+        );
         const pdfUrl =
           typeof result.pdfUrl === "string" && result.pdfUrl.length > 0 ? result.pdfUrl : null;
 
@@ -481,6 +491,112 @@ const plugin = {
 
     // Register CFE receipt download tool (no external deps, just wraps Python script)
     registerPluginTool("Download CFE Receipt", downloadCFEReceiptTool, {});
+
+    // Register process_cfe_receipt — single-tool atomic pipeline:
+    // inbound receipt → parse → official XML → lead → quote → deliver to coworker.
+    if (cfeApiKey && supabaseApiKey) {
+      const cfeOutputDir = path.join(stateDir ?? os.homedir(), "whatsapp-lead-bot", "cfe-output");
+      try {
+        fs.mkdirSync(cfeOutputDir, { recursive: true });
+      } catch (err) {
+        console.error(`[whatsapp-lead-bot] Failed to create cfeOutputDir: ${String(err)}`);
+      }
+      const xmlDownloader = createPythonCfeXmlDownloader(cfeOutputDir);
+      registerPluginTool("Process CFE Receipt", processCFEReceiptTool, {
+        parseInboundReceipt: (mediaPath: string) =>
+          parseCFEBill(mediaPath, cfeApiKey, config.supabaseCfeBillUrl),
+        downloadOfficialXml: (input: { rpu: string; nombre: string }) =>
+          xmlDownloader.download(input),
+        saveLead: async (input: { phone: string; name: string; notes?: string }) => {
+          const result = (await saveLeadTool.execute(
+            { phone: input.phone, name: input.name, notes: input.notes },
+            { db, labelService, runtime },
+          )) as { success: boolean; lead?: { id: number } };
+          if (!result.success || !result.lead) {
+            throw new Error("save_lead returned no lead");
+          }
+          return { leadId: result.lead.id };
+        },
+        saveReceiptData: async (input: {
+          leadId: number;
+          receiptJson: string;
+          tariff?: string;
+          annualKwh?: number;
+        }) => {
+          await db.updateReceiptData(input.leadId, {
+            receipt_data: input.receiptJson,
+            tariff: input.tariff,
+            annual_kwh: input.annualKwh,
+          });
+        },
+        calculateQuote: async (billId: string) => {
+          const result = await calculateQuoteTool.execute(
+            { billId },
+            { apiKey: supabaseApiKey, apiUrl: config.supabaseQuoteUrl },
+          );
+          if (result.success !== true) {
+            return {
+              success: false as const,
+              error: typeof result.error === "string" ? result.error : "calculate_quote failed",
+            };
+          }
+          const q = (result.quote ?? {}) as Record<string, unknown>;
+          const num = (v: unknown): number =>
+            typeof v === "number" && Number.isFinite(v) ? v : NaN;
+          const pdfUrl =
+            typeof result.pdfUrl === "string" && result.pdfUrl.length > 0 ? result.pdfUrl : "";
+          const cashPrice = num(q.cashPrice ?? q.cash_price ?? q.precio_contado);
+          const financedPrice = num(q.financedPrice ?? q.financed_price ?? q.precio_financiado);
+          const annualSavings = num(q.annualSavings ?? q.annual_savings ?? q.ahorro_anual);
+          const coveragePercent = num(q.coveragePercent ?? q.coverage_percent ?? q.cobertura);
+          const panelCount = num(q.panelCount ?? q.panel_count ?? q.paneles);
+          const paybackYears = num(q.paybackYears ?? q.payback_years ?? q.roi_anos ?? q.roiYears);
+          const required = {
+            pdfUrl,
+            cashPrice,
+            financedPrice,
+            annualSavings,
+            coveragePercent,
+            panelCount,
+            paybackYears,
+          };
+          for (const [k, v] of Object.entries(required)) {
+            if (typeof v === "number" ? !Number.isFinite(v) : !v) {
+              return { success: false as const, error: `quote missing field: ${k}` };
+            }
+          }
+          return {
+            success: true as const,
+            quote: {
+              pdfUrl,
+              panelCount,
+              cashPrice,
+              financedPrice,
+              annualSavings,
+              coveragePercent,
+              paybackYears,
+            },
+          };
+        },
+        downloadFile: async (url: string, destPath: string) => {
+          const response = await fetch(url);
+          if (!response.ok || !response.body) {
+            throw new Error(`downloadFile ${url} → HTTP ${response.status}`);
+          }
+          await pipeline(
+            Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
+            fs.createWriteStream(destPath),
+          );
+          return destPath;
+        },
+        runtime,
+        outputDir: cfeOutputDir,
+      });
+    } else {
+      console.warn(
+        "[whatsapp-lead-bot] process_cfe_receipt disabled (requires SUPABASE_API_KEY for parsing + quote)",
+      );
+    }
 
     // Register lead management tools
     registerPluginTool("Save Lead", saveLeadTool, { db, labelService, runtime });

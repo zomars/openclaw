@@ -33,6 +33,8 @@ interface CFEAPIResponse {
 export interface CFEBillData {
   billId?: string;
   tarifa?: string;
+  numero_servicio?: string;
+  nombre_titular?: string;
   consumo_periodo_kwh?: number;
   monto_pagar_mxn?: number;
   periodo_inicio?: string;
@@ -181,6 +183,8 @@ function mapAPIResponseToInternalFormat(apiResponse: CFEAPIResponse): CFEBillDat
   return {
     billId,
     tarifa: data.tariffType,
+    numero_servicio: data.serviceNumber,
+    nombre_titular: data.customerName,
     consumo_periodo_kwh: currentPeriod?.kWh,
     monto_pagar_mxn: currentPeriod?.amount,
     periodo_inicio: currentPeriod?.period.split(" al ")[0]?.replace("del ", ""),
@@ -214,7 +218,9 @@ export function findRecentPDFs(mediaDir: string, maxAgeSeconds: number = 10): st
     const recentPDFs: string[] = [];
 
     for (const file of files) {
-      if (!file.endsWith(".pdf")) {continue;}
+      if (!file.endsWith(".pdf")) {
+        continue;
+      }
 
       const fullPath = `${mediaDir}/${file}`;
       const stats = fs.statSync(fullPath);
