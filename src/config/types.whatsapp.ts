@@ -5,6 +5,7 @@ import type {
   DmPolicy,
   GroupPolicy,
   MarkdownConfig,
+  MessageBatchingConfig,
 } from "./types.base.js";
 import type {
   ChannelHealthMonitorConfig,
@@ -97,6 +98,8 @@ type WhatsAppSharedConfig = {
   heartbeat?: ChannelHeartbeatVisibilityConfig;
   /** Channel health monitor overrides for this channel/account. */
   healthMonitor?: ChannelHealthMonitorConfig;
+  /** Message batching settings for rate limiting (batch N consecutive messages with delay between batches). */
+  messageBatching?: MessageBatchingConfig;
 };
 
 type WhatsAppConfigCore = {

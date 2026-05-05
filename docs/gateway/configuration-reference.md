@@ -118,6 +118,11 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
       chunkMode: "length", // length | newline
       mediaMaxMb: 50,
       sendReadReceipts: true, // blue ticks (false in self-chat mode)
+      messageBatching: {
+        enabled: true, // batch 3 consecutive messages → 1 delivery
+        batchSize: 3, // number of messages per batch
+        delayMs: 10000, // 10 seconds between batches
+      },
       groups: {
         "*": { requireMention: true },
       },
@@ -174,6 +179,11 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
       botToken: "your-bot-token",
       dmPolicy: "pairing",
       allowFrom: ["tg:123456789"],
+      messageBatching: {
+        enabled: true, // batch 3 consecutive messages → 1 delivery
+        batchSize: 3, // number of messages per batch
+        delayMs: 10000, // 10 seconds between batches
+      },
       groups: {
         "*": { requireMention: true },
         "-1001234567890": {

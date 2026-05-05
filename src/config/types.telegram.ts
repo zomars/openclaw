@@ -4,6 +4,7 @@ import type {
   DmPolicy,
   GroupPolicy,
   MarkdownConfig,
+  MessageBatchingConfig,
   OutboundRetryConfig,
   ReplyToMode,
   SessionThreadBindingsConfig,
@@ -216,6 +217,8 @@ export type TelegramAccountConfig = {
   trustedLocalFileRoots?: string[];
   /** Auto-rename DM forum topics on first message using LLM. Default: true. */
   autoTopicLabel?: AutoTopicLabelConfig;
+  /** Message batching settings for rate limiting (batch N consecutive messages with delay between batches). */
+  messageBatching?: MessageBatchingConfig;
 };
 
 export type TelegramTopicConfig = {

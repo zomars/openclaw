@@ -22,6 +22,15 @@ export type OutboundRetryConfig = {
   jitter?: number;
 };
 
+export type MessageBatchingConfig = {
+  /** Enable message batching for this channel (default: true for WhatsApp/Telegram). */
+  enabled?: boolean;
+  /** Number of consecutive messages to batch into a single delivery (default: 3). */
+  batchSize?: number;
+  /** Delay in milliseconds between batches (default: 10000 for 10 seconds). */
+  delayMs?: number;
+};
+
 export type BlockStreamingCoalesceConfig = {
   minChars?: number;
   maxChars?: number;
