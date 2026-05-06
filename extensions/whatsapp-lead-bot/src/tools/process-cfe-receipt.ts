@@ -1,18 +1,16 @@
 /**
  * Tool: process_cfe_receipt
  *
- * End-to-end CFE receipt → cotización pipeline. The LLM only provides the inbound
- * media path and the coworker phone; the tool handles parsing, official XML
- * download, lead persistence, quote calculation, and delivery atomically.
- *
- * Atomic / all-or-nothing: if any step fails, no quote is sent. The coworker
- * receives a clear error instead of a partial result.
- *
- * Tracer-bullet scope: the official CFE PDF render (XML → styled PDF) is
- * deferred. The XML path and parsed CFE data are returned and summarized in
- * the message; only the cotización PDF is sent as an attachment for now.
+ * End-to-end CFE receipt → cotización pipeline for the coworker flow.
+ * Single Supabase endpoint (parse-and-quote) handles parsing, official XML
+ * download, and quote calculation. This tool persists the lead, downloads
+ * the PDF locally, and delivers a single summary message + attachment.
  */
-import type { CFEBillData } from "../media/cfe-api-client.js";
+import type {
+  ParseAndQuoteClient,
+  ParseAndQuoteError,
+  ParseAndQuoteResult,
+} from "../cfe/parse-and-quote-client.js";
 import type { Runtime } from "../runtime.js";
 
 export interface ProcessCFEReceiptParams {
@@ -20,55 +18,16 @@ export interface ProcessCFEReceiptParams {
   coworkerPhone: string;
 }
 
-export interface ParsedQuote {
-  pdfUrl: string;
-  panelCount: number;
-  cashPrice: number;
-  financedPrice: number;
-  annualSavings: number;
-  coveragePercent: number;
-  paybackYears: number;
-  systemKw?: number;
-}
-
 export interface ProcessCFEReceiptDeps {
-  parseInboundReceipt: (mediaPath: string) => Promise<CFEBillData>;
-  downloadOfficialXml: (input: {
-    rpu: string;
-    nombre: string;
-  }) => Promise<{
-    xmlPath: string;
-    rpu: string;
-    nombre: string;
-    total?: number;
-    annualKwh?: number;
-  }>;
+  parseAndQuote: ParseAndQuoteClient["quote"];
   saveLead: (input: { phone: string; name: string; notes?: string }) => Promise<{ leadId: number }>;
-  saveReceiptData: (input: {
-    leadId: number;
-    receiptJson: string;
-    tariff?: string;
-    annualKwh?: number;
-  }) => Promise<void>;
-  calculateQuote: (
-    billId: string,
-  ) => Promise<{ success: true; quote: ParsedQuote } | { success: false; error: string }>;
+  saveQuoteId: (input: { leadId: number; quoteId: string; quoteNumber: string }) => Promise<void>;
   downloadFile: (url: string, destPath: string) => Promise<string>;
   runtime: Runtime;
   outputDir: string;
 }
 
-const ERR_PHOTO_UNREADABLE =
-  "No pude leer este recibo. ¿Puedes mandar una foto más clara o el PDF original?";
-const ERR_NOT_CFE = "Este archivo no parece ser un recibo CFE. Verifica que sea el oficial.";
-const ERR_MISSING_FIELDS =
-  "El recibo no tiene los datos completos (RPU o titular). Pide al cliente una foto más clara del recibo CFE.";
-const ERR_CFE_PORTAL =
-  "El portal CFE rechazó la consulta. Esto suele pasar cuando el nombre del titular no coincide exactamente con el RPU. Verifica el nombre como aparece en el recibo y reintenta.";
-const ERR_QUOTE_FAILED =
-  "Hubo un problema generando la cotización. Aleyda revisará en cuanto pueda.";
 const ERR_INTERNAL = "Hubo un problema procesando el recibo. Aleyda revisará en cuanto pueda.";
-
 const ACK_PROCESSING = "Procesando recibo, dame un momento...";
 
 const inputJsonSchema = {
@@ -98,12 +57,11 @@ export interface ProcessCFEReceiptResult {
 export const processCFEReceiptTool = {
   name: "process_cfe_receipt",
   description:
-    "Process a CFE receipt (image or PDF) end-to-end: parse, download official XML from CFE, " +
-    "create/update lead attributed to the coworker, calculate solar quote, and deliver the " +
-    "quote PDF + summary to the coworker via WhatsApp. ATOMIC: returns success only after " +
-    "everything (parse, official download, quote, send) completes. On any failure, sends a " +
-    "clear error message to the coworker and returns success=false. Use this as the SINGLE " +
-    "tool call when a coworker forwards a CFE receipt photo or PDF.",
+    "Process a CFE receipt (image or PDF) end-to-end via the consolidated parse-and-quote " +
+    "endpoint: parse, download official XML, calculate solar quote, and deliver the quote PDF " +
+    "+ summary to the coworker via WhatsApp. ATOMIC: returns success only after everything " +
+    "completes. On any failure, sends a clear error message to the coworker and returns " +
+    "success=false. Use this as the SINGLE tool call when a coworker forwards a CFE receipt.",
   inputSchema: inputJsonSchema,
   execute: async (
     params: ProcessCFEReceiptParams,
@@ -138,44 +96,29 @@ export const processCFEReceiptTool = {
       console.error("[process_cfe_receipt] ack send failed (continuing):", err);
     }
 
-    // 2. Parse inbound to extract RPU + nombre + billId
-    let inbound: CFEBillData;
+    // 2. Single API call — parse + quote
+    let result: ParseAndQuoteResult | ParseAndQuoteError;
     try {
-      inbound = await deps.parseInboundReceipt(mediaPath);
+      result = await deps.parseAndQuote({ mediaPath, phoneNumber: coworkerPhone });
     } catch (err) {
-      console.error("[process_cfe_receipt] parseInboundReceipt threw:", err);
-      return await sendErr(ERR_PHOTO_UNREADABLE);
+      console.error("[process_cfe_receipt] parseAndQuote threw:", err);
+      return await sendErr(ERR_INTERNAL);
+    }
+    if (!result.success) {
+      console.error("[process_cfe_receipt] parseAndQuote failed:", result.error);
+      return await sendErr(ERR_INTERNAL);
     }
 
-    if (inbound.error) {
-      return await sendErr(
-        inbound.error === "not_cfe_receipt" ? ERR_NOT_CFE : ERR_PHOTO_UNREADABLE,
-      );
-    }
+    const customerName = result.cfe?.data?.customerName?.trim() || "Cliente";
+    const serviceNumber = result.cfe?.data?.serviceNumber;
 
-    const rpu = inbound.numero_servicio?.replace(/\s/g, "");
-    const nombre = inbound.nombre_titular?.trim();
-    const billId = inbound.billId;
-    if (!rpu || !nombre || !billId) {
-      return await sendErr(ERR_MISSING_FIELDS);
-    }
-
-    // 3. Download official XML from CFE portal (validates name matches RPU)
-    let official: Awaited<ReturnType<typeof deps.downloadOfficialXml>>;
-    try {
-      official = await deps.downloadOfficialXml({ rpu, nombre });
-    } catch (err) {
-      console.error("[process_cfe_receipt] downloadOfficialXml failed:", err);
-      return await sendErr(ERR_CFE_PORTAL);
-    }
-
-    // 4. Persist lead attributed to the coworker
+    // 3. Persist lead under coworker phone
     let leadId: number;
     try {
       const saved = await deps.saveLead({
         phone: coworkerPhone,
-        name: nombre,
-        notes: `Cotización solicitada por coworker. RPU ${rpu}.`,
+        name: customerName,
+        notes: `Cotización solicitada por coworker. RPU ${serviceNumber ?? "?"}. Cotización ${result.quoteNumber}.`,
       });
       leadId = saved.leadId;
     } catch (err) {
@@ -183,48 +126,37 @@ export const processCFEReceiptTool = {
       return await sendErr(ERR_INTERNAL);
     }
 
+    // 4. Save quote reference (best-effort)
     try {
-      await deps.saveReceiptData({
+      await deps.saveQuoteId({
         leadId,
-        receiptJson: JSON.stringify(inbound),
-        tariff: inbound.tarifa,
-        annualKwh: official.annualKwh ?? inbound.calculado?.promedio_anual_kwh,
+        quoteId: result.quoteId,
+        quoteNumber: result.quoteNumber,
       });
     } catch (err) {
-      console.error("[process_cfe_receipt] saveReceiptData failed (continuing):", err);
+      console.error("[process_cfe_receipt] saveQuoteId failed (continuing):", err);
     }
 
-    // 5. Calculate quote
-    const quoteResult = await deps.calculateQuote(billId);
-    if (!quoteResult.success) {
-      console.error("[process_cfe_receipt] calculateQuote failed:", quoteResult.error);
-      return await sendErr(ERR_QUOTE_FAILED);
-    }
-    const quote = quoteResult.quote;
-
-    // 6. Download quote PDF locally so we can attach it
+    // 5. Download quote PDF locally
     let quotePdfPath: string;
     try {
       quotePdfPath = await deps.downloadFile(
-        quote.pdfUrl,
+        result.pdfUrl,
         `${deps.outputDir}/cotizacion-${leadId}-${Date.now()}.pdf`,
       );
     } catch (err) {
       console.error("[process_cfe_receipt] downloadFile failed:", err);
-      return await sendErr(ERR_QUOTE_FAILED);
+      return await sendErr(ERR_INTERNAL);
     }
 
-    // 7. Send quote PDF as attachment + structured summary
-    const totalRecibo = official.total ?? inbound.monto_pagar_mxn;
-    const annualKwh = official.annualKwh ?? inbound.calculado?.promedio_anual_kwh;
+    // 6. Send summary + attachment
     const summary = buildSummaryMessage({
-      titular: nombre,
-      rpu,
-      totalRecibo,
-      annualKwh,
-      tariff: inbound.tarifa,
-      quote,
-      xmlPath: official.xmlPath,
+      titular: customerName,
+      rpu: serviceNumber,
+      tariff: result.cfe?.data?.tariffType,
+      annualKwh: result.cfe?.data?.annualConsumption,
+      quote: result.quote,
+      quoteNumber: result.quoteNumber,
     });
 
     try {
@@ -247,12 +179,11 @@ export const processCFEReceiptTool = {
 
 function buildSummaryMessage(input: {
   titular: string;
-  rpu: string;
-  totalRecibo?: number;
-  annualKwh?: number;
+  rpu?: string;
   tariff?: string;
-  quote: ParsedQuote;
-  xmlPath: string;
+  annualKwh?: number;
+  quote: ParseAndQuoteResult["quote"];
+  quoteNumber: string;
 }): string {
   const fmt = (n?: number): string =>
     typeof n === "number" && Number.isFinite(n) ? `$${Math.round(n).toLocaleString("es-MX")}` : "—";
@@ -263,11 +194,11 @@ function buildSummaryMessage(input: {
 
   return [
     `Cotización lista para *${input.titular}*`,
+    `Folio: ${input.quoteNumber}`,
     "",
-    `*Recibo CFE oficial descargado*`,
-    `• RPU: ${input.rpu}`,
+    `*Datos del recibo*`,
+    `• RPU: ${input.rpu ?? "—"}`,
     `• Tarifa: ${input.tariff ?? "—"}`,
-    `• Total último recibo: ${fmt(input.totalRecibo)}`,
     `• Consumo anual: ${kwh(input.annualKwh)}`,
     "",
     `*Sistema propuesto*`,

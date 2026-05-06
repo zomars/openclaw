@@ -5,13 +5,11 @@
  */
 
 import type { Lead } from "../database/schema.js";
-import type { CFEParseContext } from "../media/handler.js";
 import type { AgentNotifier } from "../notifications/agent-notify.js";
 import type { PluginHookMessageReceivedEvent, PluginHookMessageReceivedResult } from "../types.js";
 
 export interface HandoffInterceptorDeps {
   agentNotifier: AgentNotifier;
-  cfeParseContext?: CFEParseContext;
 }
 
 interface HandoffInput {
@@ -24,12 +22,17 @@ export class HandoffInterceptor {
 
   async handle(input: HandoffInput): Promise<PluginHookMessageReceivedResult | null> {
     const { lead, event } = input;
-    if (lead.status !== "handed_off") {return null;}
+    if (lead.status !== "handed_off") {
+      return null;
+    }
 
     const { mediaType, mediaPath } = this.extractMedia(event);
 
     if (mediaType && this.isPotentialReceipt(mediaType)) {
-      await this.processCFEReceipt(lead, mediaPath);
+      // Receipts received post-handoff: notify the human agent for review;
+      // we no longer parse server-side here.
+      await this.deps.agentNotifier.notifyHandoffCapture(lead, "receipt");
+      void mediaPath;
     } else if (mediaType) {
       await this.deps.agentNotifier.notifyHandoffCapture(lead, "media");
     }
@@ -53,7 +56,9 @@ export class HandoffInterceptor {
       }
     }
 
-    if (mediaType === "text/plain") {mediaType = undefined;}
+    if (mediaType === "text/plain") {
+      mediaType = undefined;
+    }
     return { mediaType, mediaPath };
   }
 
@@ -64,28 +69,5 @@ export class HandoffInterceptor {
       mediaType === "image/png" ||
       mediaType === "image/webp"
     );
-  }
-
-  private async processCFEReceipt(lead: Lead, mediaPath?: string): Promise<void> {
-    if (!mediaPath || !this.deps.cfeParseContext) {
-      await this.deps.agentNotifier.notifyHandoffCapture(lead, "media");
-      return;
-    }
-
-    try {
-      const { parseCFEReceiptTool } = await import("../tools/parse-cfe-receipt.js");
-      const result = await parseCFEReceiptTool.execute(
-        { leadId: lead.id, filePath: mediaPath },
-        this.deps.cfeParseContext,
-      );
-
-      const detail = result.success
-        ? `Tarifa ${result.data?.tariff || "?"}, ${result.data?.annual_kwh || "?"} kWh/yr`
-        : undefined;
-      await this.deps.agentNotifier.notifyHandoffCapture(lead, "receipt", detail);
-    } catch (err) {
-      console.error("[handoff-interceptor] CFE parse failed silently:", err);
-      await this.deps.agentNotifier.notifyHandoffCapture(lead, "media");
-    }
   }
 }

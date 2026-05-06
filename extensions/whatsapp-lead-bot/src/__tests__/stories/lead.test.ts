@@ -1,35 +1,56 @@
 import { describe, it, expect } from "vitest";
-import { computeScore } from "../../scoring.js";
-import { createTestDb } from "../helpers/tmp-db.js";
-import { FakeNotifier } from "../helpers/fake-notifier.js";
-import { HandoffManager } from "../../handoff/manager.js";
-import { MediaHandler } from "../../media/handler.js";
-import { createFakeRuntime } from "../helpers/fake-runtime.js";
-import { createTestConfig } from "../helpers/test-config.js";
-import { AgentNotifier } from "../../notifications/agent-notify.js";
 import { AdminCommandHandler } from "../../admin/commands.js";
-import { RateLimiter } from "../../rate-limit/limiter.js";
-import { RateLimitCoordinator } from "../../rate-limit/coordinator.js";
-import { CircuitBreaker } from "../../rate-limit/circuit-breaker.js";
-import { GlobalRateLimiter } from "../../rate-limit/global-limiter.js";
-import { HandoffInterceptor } from "../../hooks/handoff-interceptor.js";
-import { createMessageReceivedHandler } from "../../hooks/message-received.js";
 import { withContext } from "../../context.js";
 import type { Lead } from "../../database/schema.js";
+import { HandoffManager } from "../../handoff/manager.js";
+import { HandoffInterceptor } from "../../hooks/handoff-interceptor.js";
+import { createMessageReceivedHandler } from "../../hooks/message-received.js";
+import { MediaHandler } from "../../media/handler.js";
+import { AgentNotifier } from "../../notifications/agent-notify.js";
+import { CircuitBreaker } from "../../rate-limit/circuit-breaker.js";
+import { RateLimitCoordinator } from "../../rate-limit/coordinator.js";
+import { GlobalRateLimiter } from "../../rate-limit/global-limiter.js";
+import { RateLimiter } from "../../rate-limit/limiter.js";
+import { computeScore } from "../../scoring.js";
+import { FakeNotifier } from "../helpers/fake-notifier.js";
+import { createFakeRuntime } from "../helpers/fake-runtime.js";
+import { createTestConfig } from "../helpers/test-config.js";
+import { createTestDb } from "../helpers/tmp-db.js";
 
 function makeLead(overrides: Partial<Lead> = {}): Lead {
   return {
-    id: 1, phone_number: "+5216671000000", status: "new",
-    created_at: Date.now(), updated_at: Date.now(),
-    first_contact_at: Date.now(), last_message_at: Date.now(),
-    last_bot_reply_at: null, handed_off_at: null, blocked_at: null,
-    rate_limited_at: null, follow_up_sent_at: null, quoted_at: null,
-    assigned_agent: null, blocked_reason: null, language: null,
-    name: null, location: null, property_type: null, ownership: null,
-    bimonthly_bill: null, score: null, panels_quoted: null,
-    quote_cash: null, quote_financed: null, notes: null,
-    receipt_data: null, tariff: null, annual_kwh: null,
-    rate_limit_count: 0, rate_limit_window_start: 0, custom_fields: null,
+    id: 1,
+    phone_number: "+5216671000000",
+    status: "new",
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    first_contact_at: Date.now(),
+    last_message_at: Date.now(),
+    last_bot_reply_at: null,
+    handed_off_at: null,
+    blocked_at: null,
+    rate_limited_at: null,
+    follow_up_sent_at: null,
+    quoted_at: null,
+    assigned_agent: null,
+    blocked_reason: null,
+    language: null,
+    name: null,
+    location: null,
+    property_type: null,
+    ownership: null,
+    bimonthly_bill: null,
+    score: null,
+    panels_quoted: null,
+    quote_cash: null,
+    quote_financed: null,
+    notes: null,
+    receipt_data: null,
+    tariff: null,
+    annual_kwh: null,
+    rate_limit_count: 0,
+    rate_limit_window_start: 0,
+    custom_fields: null,
     ...overrides,
   };
 }
@@ -40,21 +61,48 @@ describe("Lead / Customer Stories", () => {
     // lead is created, and the message passes through to the agent (not suppressed).
     const { db } = createTestDb();
     const runtime = createFakeRuntime();
-    const config = createTestConfig({ whatsappAccounts: ["acct-1"], agentNumbers: [], teamNumbers: [] });
+    const config = createTestConfig({
+      whatsappAccounts: ["acct-1"],
+      agentNumbers: [],
+      teamNumbers: [],
+    });
     const notifier = new FakeNotifier();
     const handoffManager = new HandoffManager(db, notifier);
-    const rateLimiter = new RateLimiter(db, { enabled: true, messagesPerHour: 10, windowMs: 3600000 });
-    const globalLimiter = new GlobalRateLimiter(db, { enabled: true, maxMessagesPerHour: 1000, windowMs: 3600000 });
-    const circuitBreaker = new CircuitBreaker(db, { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 10 }, notifier);
-    const rateLimitCoordinator = new RateLimitCoordinator(circuitBreaker, globalLimiter, rateLimiter);
+    const rateLimiter = new RateLimiter(db, {
+      enabled: true,
+      messagesPerHour: 10,
+      windowMs: 3600000,
+    });
+    const globalLimiter = new GlobalRateLimiter(db, {
+      enabled: true,
+      maxMessagesPerHour: 1000,
+      windowMs: 3600000,
+    });
+    const circuitBreaker = new CircuitBreaker(
+      db,
+      { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 10 },
+      notifier,
+    );
+    const rateLimitCoordinator = new RateLimitCoordinator(
+      circuitBreaker,
+      globalLimiter,
+      rateLimiter,
+    );
     const mediaHandler = new MediaHandler();
     const agentNotifier = new AgentNotifier(runtime, config);
     const adminHandler = new AdminCommandHandler(db, handoffManager, rateLimiter, null, null);
     const handoffInterceptor = new HandoffInterceptor({ agentNotifier });
 
     const handler = createMessageReceivedHandler({
-      db, config, adminHandler, rateLimiter, rateLimitCoordinator,
-      mediaHandler, agentNotifier, handoffManager, handoffInterceptor,
+      db,
+      config,
+      adminHandler,
+      rateLimiter,
+      rateLimitCoordinator,
+      mediaHandler,
+      agentNotifier,
+      handoffManager,
+      handoffInterceptor,
     });
 
     // Wrap with context so getContext() works inside the handler
@@ -62,7 +110,11 @@ describe("Lead / Customer Stories", () => {
     const wrappedHandler = withContext(getRuntime, (_deps: {}) => handler)({});
 
     const result = await wrappedHandler(
-      { from: "+5216671999999", content: "Hola, me interesa la energía solar", timestamp: Date.now() },
+      {
+        from: "+5216671999999",
+        content: "Hola, me interesa la energía solar",
+        timestamp: Date.now(),
+      },
       { channelId: "whatsapp", accountId: "acct-1" },
     );
 
@@ -77,15 +129,33 @@ describe("Lead / Customer Stories", () => {
 
   it("2. auto-computes lead score (HOT/WARM/COLD/OUT) based on location, bill amount, and ownership", () => {
     expect(computeScore({ location: null, bimonthly_bill: 2500, ownership: "propia" })).toBeNull();
-    expect(computeScore({ location: "Culiacán", bimonthly_bill: null, ownership: "propia" })).toBeNull();
-    expect(computeScore({ location: "Mexico City", bimonthly_bill: 3000, ownership: "propia" })).toBe("OUT");
-    expect(computeScore({ location: "Culiacán", bimonthly_bill: 3000, ownership: "rentada" })).toBe("OUT");
-    expect(computeScore({ location: "Mazatlán", bimonthly_bill: 300, ownership: "propia" })).toBe("OUT");
-    expect(computeScore({ location: "Los Mochis", bimonthly_bill: 800, ownership: "propia" })).toBe("COLD");
-    expect(computeScore({ location: "Guasave", bimonthly_bill: 1500, ownership: "propia" })).toBe("WARM");
-    expect(computeScore({ location: "Culiacán", bimonthly_bill: 2500, ownership: "propia" })).toBe("HOT");
-    expect(computeScore({ location: "Culiacan", bimonthly_bill: 2500, ownership: "propia" })).toBe("HOT");
-    expect(computeScore({ location: "Sinaloa de Leyva", bimonthly_bill: 2500, ownership: "propia" })).toBe("HOT");
+    expect(
+      computeScore({ location: "Culiacán", bimonthly_bill: null, ownership: "propia" }),
+    ).toBeNull();
+    expect(
+      computeScore({ location: "Mexico City", bimonthly_bill: 3000, ownership: "propia" }),
+    ).toBe("OUT");
+    expect(computeScore({ location: "Culiacán", bimonthly_bill: 3000, ownership: "rentada" })).toBe(
+      "OUT",
+    );
+    expect(computeScore({ location: "Mazatlán", bimonthly_bill: 300, ownership: "propia" })).toBe(
+      "OUT",
+    );
+    expect(computeScore({ location: "Los Mochis", bimonthly_bill: 800, ownership: "propia" })).toBe(
+      "COLD",
+    );
+    expect(computeScore({ location: "Guasave", bimonthly_bill: 1500, ownership: "propia" })).toBe(
+      "WARM",
+    );
+    expect(computeScore({ location: "Culiacán", bimonthly_bill: 2500, ownership: "propia" })).toBe(
+      "HOT",
+    );
+    expect(computeScore({ location: "Culiacan", bimonthly_bill: 2500, ownership: "propia" })).toBe(
+      "HOT",
+    );
+    expect(
+      computeScore({ location: "Sinaloa de Leyva", bimonthly_bill: 2500, ownership: "propia" }),
+    ).toBe("HOT");
   });
 
   it("3. parses CFE electricity receipt (PDF/image) extracting tariff, consumption, and annual kWh", async () => {
@@ -213,34 +283,15 @@ describe("Lead / Customer Stories", () => {
     expect(notifier.handoffs).toHaveLength(1);
   });
 
-  it("10. calculates solar panel quote from parsed CFE bill", async () => {
-    // Input validation only — actual API call requires live Supabase
-    const { calculateQuoteTool } = await import("../../tools/calculate-quote.js");
-
-    // Missing billId
-    const noBill = await calculateQuoteTool.execute({ billId: "" }, { apiKey: "test", apiUrl: "http://fake" });
-    expect(noBill.success).toBe(false);
-    expect(noBill.error).toBe("NO_BILL_ID");
-
-    // Invalid UUID format
-    const badId = await calculateQuoteTool.execute({ billId: "not-a-uuid" }, { apiKey: "test", apiUrl: "http://fake" });
-    expect(badId.success).toBe(false);
-    expect(badId.error).toBe("INVALID_BILL_ID");
-
-    // Missing API key
-    const noKey = await calculateQuoteTool.execute(
-      { billId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890" },
-      { apiKey: "", apiUrl: "http://fake" },
-    );
-    expect(noKey.success).toBe(false);
-  });
-
   it("11. captures ctwa_clid from Click-to-WhatsApp ads for attribution", async () => {
     const { db } = createTestDb();
 
     // Create a lead and store ctwa_clid via updateCustomFields
     const lead = await db.getOrCreateLead("526671000080");
-    await db.updateCustomFields(lead.id, { ctwa_clid: "ad-click-123", ctwa_clid_captured_at: Date.now() });
+    await db.updateCustomFields(lead.id, {
+      ctwa_clid: "ad-click-123",
+      ctwa_clid_captured_at: Date.now(),
+    });
 
     const updated = await db.getLeadByPhone("526671000080");
     const fields = JSON.parse(updated!.custom_fields);

@@ -1,41 +1,42 @@
 import { describe, it, expect } from "vitest";
-import type { CFEBillData } from "../../media/cfe-api-client.js";
+import type { ParseAndQuoteError, ParseAndQuoteResult } from "../../cfe/parse-and-quote-client.js";
 import {
   processCFEReceiptTool,
   type ProcessCFEReceiptDeps,
-  type ParsedQuote,
 } from "../../tools/process-cfe-receipt.js";
 import { createFakeRuntime } from "../helpers/fake-runtime.js";
 
 const COWORKER_PHONE = "526671234567";
 const MEDIA_PATH = "/tmp/inbound-receipt.jpg";
 
-const SAMPLE_INBOUND: CFEBillData = {
-  billId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  numero_servicio: "123456789012",
-  nombre_titular: "JUAN PEREZ LOPEZ",
-  tarifa: "1F",
-  monto_pagar_mxn: 2500,
-  consumo_periodo_kwh: 800,
-  calculado: { promedio_anual_kwh: 9600 },
-};
-
-const SAMPLE_QUOTE: ParsedQuote = {
-  pdfUrl: "https://example.com/cotizacion-abc.pdf",
-  panelCount: 12,
-  cashPrice: 180000,
-  financedPrice: 220000,
-  annualSavings: 18000,
-  coveragePercent: 95,
-  paybackYears: 4.2,
+const SAMPLE_OK: ParseAndQuoteResult = {
+  success: true,
+  quoteId: "q-uuid-1",
+  quoteNumber: "SOL20260506-1234",
+  pdfUrl: "https://example.com/quote.pdf",
+  quote: {
+    panelCount: 12,
+    cashPrice: 180000,
+    financedPrice: 220000,
+    annualSavings: 18000,
+    coveragePercent: 95,
+    paybackYears: 4.2,
+  },
+  cfe: {
+    data: {
+      customerName: "JUAN PEREZ LOPEZ",
+      serviceNumber: "123456789012",
+      tariffType: "1F",
+      annualConsumption: 9750,
+    },
+  },
 };
 
 interface FakeState {
+  parseCalls: Array<{ mediaPath: string; phoneNumber: string }>;
   saveLeadCalls: Array<{ phone: string; name: string; notes?: string }>;
-  saveReceiptCalls: Array<{ leadId: number; tariff?: string; annualKwh?: number }>;
-  calcCalls: string[];
+  saveQuoteIdCalls: Array<{ leadId: number; quoteId: string; quoteNumber: string }>;
   downloads: Array<{ url: string; dest: string }>;
-  xmlCalls: Array<{ rpu: string; nombre: string }>;
 }
 
 function buildDeps(overrides: Partial<ProcessCFEReceiptDeps> = {}): {
@@ -45,41 +46,25 @@ function buildDeps(overrides: Partial<ProcessCFEReceiptDeps> = {}): {
 } {
   const runtime = createFakeRuntime();
   const state: FakeState = {
+    parseCalls: [],
     saveLeadCalls: [],
-    saveReceiptCalls: [],
-    calcCalls: [],
+    saveQuoteIdCalls: [],
     downloads: [],
-    xmlCalls: [],
   };
 
   const deps: ProcessCFEReceiptDeps = {
-    parseInboundReceipt: async () => SAMPLE_INBOUND,
-    downloadOfficialXml: async ({ rpu, nombre }) => {
-      state.xmlCalls.push({ rpu, nombre });
-      return {
-        xmlPath: "/tmp/cfe_123456789012.xml",
-        rpu,
-        nombre,
-        total: 2480,
-        annualKwh: 9750,
-      };
+    parseAndQuote: async (input) => {
+      state.parseCalls.push(input);
+      return SAMPLE_OK;
     },
     saveLead: async (input) => {
       state.saveLeadCalls.push(input);
       return { leadId: 42 };
     },
-    saveReceiptData: async (input) => {
-      state.saveReceiptCalls.push({
-        leadId: input.leadId,
-        tariff: input.tariff,
-        annualKwh: input.annualKwh,
-      });
+    saveQuoteId: async (input) => {
+      state.saveQuoteIdCalls.push(input);
     },
-    calculateQuote: async (billId: string) => {
-      state.calcCalls.push(billId);
-      return { success: true, quote: SAMPLE_QUOTE };
-    },
-    downloadFile: async (url: string, destPath: string) => {
+    downloadFile: async (url, destPath) => {
       state.downloads.push({ url, dest: destPath });
       return destPath;
     },
@@ -92,7 +77,17 @@ function buildDeps(overrides: Partial<ProcessCFEReceiptDeps> = {}): {
 }
 
 describe("process_cfe_receipt tool", () => {
-  it("happy path: parses, downloads XML, saves lead, calculates quote, sends attachment + summary", async () => {
+  it("sends ack before processing", async () => {
+    const { deps, runtime } = buildDeps();
+    await processCFEReceiptTool.execute(
+      { mediaPath: MEDIA_PATH, coworkerPhone: COWORKER_PHONE },
+      deps,
+    );
+    expect(runtime.sentMessages[0].content.text).toContain("Procesando recibo");
+    expect(runtime.sentMessages[0].to).toBe(COWORKER_PHONE);
+  });
+
+  it("happy path: parses, saves lead, saves quote ref, downloads PDF, sends summary + attachment", async () => {
     const { deps, runtime, state } = buildDeps();
 
     const result = await processCFEReceiptTool.execute(
@@ -104,7 +99,7 @@ describe("process_cfe_receipt tool", () => {
     expect(result.leadId).toBe(42);
     expect(result.sentToCoworker).toBe(true);
 
-    expect(state.xmlCalls).toEqual([{ rpu: "123456789012", nombre: "JUAN PEREZ LOPEZ" }]);
+    expect(state.parseCalls).toEqual([{ mediaPath: MEDIA_PATH, phoneNumber: COWORKER_PHONE }]);
     expect(state.saveLeadCalls).toEqual([
       {
         phone: COWORKER_PHONE,
@@ -112,18 +107,18 @@ describe("process_cfe_receipt tool", () => {
         notes: expect.stringContaining("123456789012"),
       },
     ]);
-    expect(state.saveReceiptCalls).toEqual([{ leadId: 42, tariff: "1F", annualKwh: 9750 }]);
-    expect(state.calcCalls).toEqual(["a1b2c3d4-e5f6-7890-abcd-ef1234567890"]);
+    expect(state.saveQuoteIdCalls).toEqual([
+      { leadId: 42, quoteId: "q-uuid-1", quoteNumber: "SOL20260506-1234" },
+    ]);
     expect(state.downloads).toHaveLength(1);
-    expect(state.downloads[0].url).toBe(SAMPLE_QUOTE.pdfUrl);
+    expect(state.downloads[0].url).toBe(SAMPLE_OK.pdfUrl);
 
-    // Two messages: ack + final result
+    // Two messages: ack + final
     expect(runtime.sentMessages).toHaveLength(2);
-    expect(runtime.sentMessages[0].content.text).toContain("Procesando recibo");
     const final = runtime.sentMessages[1];
     expect(final.to).toBe(COWORKER_PHONE);
     expect(final.content.text).toContain("JUAN PEREZ LOPEZ");
-    expect(final.content.text).toContain("123456789012");
+    expect(final.content.text).toContain("SOL20260506-1234");
     expect(final.content.text).toContain("$180,000");
     expect(final.content.text).toContain("$220,000");
     expect(final.content.text).toContain("$18,000");
@@ -131,23 +126,10 @@ describe("process_cfe_receipt tool", () => {
     expect(final.content.metadata?.filePath).toBe(state.downloads[0].dest);
   });
 
-  it("uses official portal data (total + annual kWh) over inbound when both present", async () => {
-    const { deps, runtime } = buildDeps();
-    await processCFEReceiptTool.execute(
-      { mediaPath: MEDIA_PATH, coworkerPhone: COWORKER_PHONE },
-      deps,
-    );
-    const text = runtime.sentMessages[1].content.text;
-    expect(text).toContain("$2,480"); // official total, not inbound 2500
-    expect(text).toContain("9,750"); // official annual kwh, not inbound 9600
-  });
-
-  it("fails clearly when inbound parser cannot read the receipt", async () => {
+  it("parseAndQuote returning error → coworker informed, no lead created", async () => {
+    const errResp: ParseAndQuoteError = { success: false, error: "name mismatch" };
     const { deps, runtime, state } = buildDeps({
-      parseInboundReceipt: async () => ({
-        error: "no_data",
-        mensaje_para_lead: "ilegible",
-      }),
+      parseAndQuote: async () => errResp,
     });
 
     const result = await processCFEReceiptTool.execute(
@@ -157,36 +139,15 @@ describe("process_cfe_receipt tool", () => {
 
     expect(result.success).toBe(false);
     expect(state.saveLeadCalls).toHaveLength(0);
-    expect(state.calcCalls).toHaveLength(0);
     expect(state.downloads).toHaveLength(0);
-    // ack + error
     expect(runtime.sentMessages).toHaveLength(2);
-    expect(runtime.sentMessages[1].content.text).toMatch(/no pude leer|más clara/i);
+    expect(runtime.sentMessages[1].content.text).toMatch(/Aleyda|problema/i);
   });
 
-  it("fails clearly when inbound parser succeeds but RPU/nombre/billId are missing", async () => {
+  it("saveLead failing → error sent, no PDF download", async () => {
     const { deps, runtime, state } = buildDeps({
-      parseInboundReceipt: async () => ({
-        billId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-        // numero_servicio missing
-        nombre_titular: "JUAN PEREZ",
-      }),
-    });
-
-    const result = await processCFEReceiptTool.execute(
-      { mediaPath: MEDIA_PATH, coworkerPhone: COWORKER_PHONE },
-      deps,
-    );
-
-    expect(result.success).toBe(false);
-    expect(state.xmlCalls).toHaveLength(0);
-    expect(runtime.sentMessages[1].content.text).toMatch(/RPU|titular/i);
-  });
-
-  it("fails clearly when CFE portal rejects (name mismatch)", async () => {
-    const { deps, runtime, state } = buildDeps({
-      downloadOfficialXml: async () => {
-        throw new Error("Form rejected: nombre no coincide");
+      saveLead: async () => {
+        throw new Error("db down");
       },
     });
 
@@ -196,32 +157,12 @@ describe("process_cfe_receipt tool", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(state.saveLeadCalls).toHaveLength(0);
-    expect(state.calcCalls).toHaveLength(0);
-    expect(runtime.sentMessages[1].content.text).toMatch(/nombre|coincide|titular/i);
-  });
-
-  it("fails clearly when calculate_quote fails — does not send any attachment", async () => {
-    const { deps, runtime, state } = buildDeps({
-      calculateQuote: async () => ({ success: false, error: "billId not found" }),
-    });
-
-    const result = await processCFEReceiptTool.execute(
-      { mediaPath: MEDIA_PATH, coworkerPhone: COWORKER_PHONE },
-      deps,
-    );
-
-    expect(result.success).toBe(false);
     expect(state.downloads).toHaveLength(0);
-    // Lead WAS created (this is documented atomicity gap — quote is best-effort downstream)
-    expect(state.saveLeadCalls).toHaveLength(1);
-    expect(runtime.sentMessages[1].content.text).toMatch(/cotización|aleyda/i);
-    // No attachment on the error message
-    expect(runtime.sentMessages[1].content.metadata?.filePath).toBeUndefined();
+    expect(runtime.sentMessages[1].content.text).toMatch(/Aleyda|problema/i);
   });
 
-  it("fails clearly when downloading the quote PDF fails", async () => {
-    const { deps, runtime, state } = buildDeps({
+  it("downloadFile failing → error sent without attachment", async () => {
+    const { deps, runtime } = buildDeps({
       downloadFile: async () => {
         throw new Error("HTTP 500");
       },
@@ -233,13 +174,64 @@ describe("process_cfe_receipt tool", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(state.calcCalls).toHaveLength(1);
     expect(runtime.sentMessages[1].content.metadata?.filePath).toBeUndefined();
+  });
+
+  it("missing customerName falls back to 'Cliente'", async () => {
+    const noName: ParseAndQuoteResult = {
+      ...SAMPLE_OK,
+      cfe: { data: { ...SAMPLE_OK.cfe!.data!, customerName: undefined } },
+    };
+    const { deps, state } = buildDeps({
+      parseAndQuote: async () => noName,
+    });
+
+    const result = await processCFEReceiptTool.execute(
+      { mediaPath: MEDIA_PATH, coworkerPhone: COWORKER_PHONE },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(state.saveLeadCalls[0].name).toBe("Cliente");
+  });
+
+  it("final send failing returns send_failed but lead is preserved", async () => {
+    const runtime = createFakeRuntime();
+    let callCount = 0;
+    runtime.sendMessage = async (to, content) => {
+      callCount++;
+      // First call (ack) succeeds, second (final summary) fails.
+      if (callCount === 2) {
+        throw new Error("network");
+      }
+      runtime.sentMessages.push({ to, content });
+    };
+    const { deps, state } = buildDeps({ runtime });
+
+    const result = await processCFEReceiptTool.execute(
+      { mediaPath: MEDIA_PATH, coworkerPhone: COWORKER_PHONE },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("send_failed");
+    expect(result.leadId).toBe(42);
+    expect(state.downloads).toHaveLength(1);
   });
 
   it("rejects empty params", async () => {
     const { deps } = buildDeps();
-    const result = await processCFEReceiptTool.execute({ mediaPath: "", coworkerPhone: "" }, deps);
-    expect(result.success).toBe(false);
+    const r1 = await processCFEReceiptTool.execute({ mediaPath: "", coworkerPhone: "" }, deps);
+    expect(r1.success).toBe(false);
+    const r2 = await processCFEReceiptTool.execute(
+      { mediaPath: MEDIA_PATH, coworkerPhone: "" },
+      deps,
+    );
+    expect(r2.success).toBe(false);
+    const r3 = await processCFEReceiptTool.execute(
+      { mediaPath: "", coworkerPhone: COWORKER_PHONE },
+      deps,
+    );
+    expect(r3.success).toBe(false);
   });
 });

@@ -8,18 +8,11 @@
  * send it to the user before the (potentially slow) parsing starts.
  */
 
-import type { ExtractionStore, LeadRepository } from "../database.js";
 import type { Lead } from "../database/schema.js";
 
-export interface CFEParseContext {
-  apiKey: string;
-  apiUrl: string;
-  db: ExtractionStore & Pick<LeadRepository, "updateReceiptData">;
-  maxAttempts: number;
-}
-
 export interface MediaHandlerDeps {
-  cfeParseContext?: CFEParseContext;
+  // Reserved for future per-handler config; CFE parsing is now handled by
+  // process_cfe_receipt(_customer) tools which the agent invokes directly.
 }
 
 const RECEIPT_ACK =
@@ -53,33 +46,21 @@ export class MediaHandler {
   }
 
   /**
-   * Processes media — for CFE receipts with parse context, calls the API
-   * and returns parsed JSON as content rewrite. Ack should already be sent.
+   * Processes media. CFE receipts are handled by the agent via the
+   * process_cfe_receipt(_customer) tool — this method only decides whether
+   * to suppress the agent for non-receipt media (already acked).
    */
   async handleMedia(
     lead: Lead,
     mediaType: string,
-    mediaPath?: string,
+    _mediaPath?: string,
     _fileSize?: number,
   ): Promise<{
     suppress: boolean;
     content?: string;
   }> {
     if (this.isPotentialReceipt(mediaType) && this.isExpectingReceipt(lead)) {
-      if (mediaPath && this.deps.cfeParseContext) {
-        try {
-          const { parseCFEReceiptTool } = await import("../tools/parse-cfe-receipt.js");
-          const result = await parseCFEReceiptTool.execute(
-            { leadId: lead.id, filePath: mediaPath },
-            this.deps.cfeParseContext,
-          );
-          return { suppress: false, content: JSON.stringify(result) };
-        } catch (err) {
-          console.error(`[media-handler] CFE parse failed, falling back to agent:`, err);
-          return { suppress: false };
-        }
-      }
-      // No cfeParseContext — let agent handle with tool
+      // Let agent invoke process_cfe_receipt(_customer) tool directly.
       return { suppress: false };
     }
 

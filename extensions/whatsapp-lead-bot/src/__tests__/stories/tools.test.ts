@@ -1,19 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { saveLeadTool } from "../../tools/save-lead.js";
-import { getLeadTool } from "../../tools/get-lead.js";
-import { listLeadsTool } from "../../tools/list-leads.js";
-import { handoffLeadTool } from "../../tools/handoff-lead.js";
-import { blockLeadTool } from "../../tools/block-lead.js";
-import { saveReceiptDataTool } from "../../tools/save-receipt-data.js";
 import { WhatsAppLabelService } from "../../labels.js";
-import { createTestDb } from "../helpers/tmp-db.js";
+import { blockLeadTool } from "../../tools/block-lead.js";
+import { getLeadTool } from "../../tools/get-lead.js";
+import { handoffLeadTool } from "../../tools/handoff-lead.js";
+import { listLeadsTool } from "../../tools/list-leads.js";
+import { saveLeadTool } from "../../tools/save-lead.js";
+import { saveReceiptDataTool } from "../../tools/save-receipt-data.js";
 import { createFakeRuntime } from "../helpers/fake-runtime.js";
+import { createTestDb } from "../helpers/tmp-db.js";
 
 function createToolContext() {
   const { db } = createTestDb();
   const runtime = createFakeRuntime();
   const labelService = new WhatsAppLabelService(
-    { scores: { HOT: "HOT", WARM: "WARM", COLD: "COLD", OUT: "OUT" }, statuses: { BOT: "BOT", HUMANO: "HUMANO" } },
+    {
+      scores: { HOT: "HOT", WARM: "WARM", COLD: "COLD", OUT: "OUT" },
+      statuses: { BOT: "BOT", HUMANO: "HUMANO" },
+    },
     db,
     0, // zero delay for tests
   );
@@ -26,7 +29,13 @@ describe("LLM Agent Tool Stories", () => {
 
     // Create a HOT lead (Culiacán + 2500 + propia)
     const result = await saveLeadTool.execute(
-      { phone: "526671234567", name: "Juan", location: "Culiacán", ownership: "propia", bimonthly_bill: 2500 },
+      {
+        phone: "526671234567",
+        name: "Juan",
+        location: "Culiacán",
+        ownership: "propia",
+        bimonthly_bill: 2500,
+      },
       ctx,
     );
     expect(result.success).toBe(true);
@@ -37,10 +46,7 @@ describe("LLM Agent Tool Stories", () => {
     expect(lead!.score).toBe("HOT");
 
     // Update to a lower bill → score changes to OUT
-    const result2 = await saveLeadTool.execute(
-      { phone: "526671234567", bimonthly_bill: 300 },
-      ctx,
-    );
+    const result2 = await saveLeadTool.execute({ phone: "526671234567", bimonthly_bill: 300 }, ctx);
     expect(result2.success).toBe(true);
     const updated = await ctx.db.getLeadByPhone("526671234567");
     expect(updated!.score).toBe("OUT");
@@ -82,64 +88,6 @@ describe("LLM Agent Tool Stories", () => {
     expect(blocked.leads[0].name).toBe("Bob");
   });
 
-  it("31. parse_cfe_receipt extracts bill data from a file path", async () => {
-    // Input validation and attempt tracking — actual API call requires live Supabase
-    const { db } = createToolContext();
-    const lead = await db.upsertLead("526671000030", { name: "Test" });
-
-    // Track extraction attempts
-    const extractionId = await db.createExtractionRecord(lead.id, 1024, "/fake/receipt.pdf");
-    expect(extractionId).toBeGreaterThan(0);
-
-    // Attempt count tracking
-    const attempts = await db.getExtractionAttempts(lead.id);
-    expect(attempts).toHaveLength(1);
-    expect(attempts[0].status).toBe("pending");
-
-    // Update extraction status
-    await db.updateExtractionStatus(extractionId, "success");
-    const updated = await db.getExtractionAttempts(lead.id);
-    expect(updated[0].status).toBe("success");
-
-    // Failed extraction tracking
-    const failId = await db.createExtractionRecord(lead.id, null, null);
-    await db.updateExtractionStatus(failId, "failed", "API timeout");
-    const failures = await db.getRecentExtractionFailures(3600000);
-    expect(failures).toBeGreaterThanOrEqual(1);
-  });
-
-  it("32. calculate_quote generates a solar quote from a parsed bill", async () => {
-    // Input validation only — actual API call requires live Supabase
-    const { calculateQuoteTool } = await import("../../tools/calculate-quote.js");
-
-    const noBill = await calculateQuoteTool.execute({ billId: "" }, { apiKey: "k", apiUrl: "http://x" });
-    expect(noBill.success).toBe(false);
-    expect(noBill.error).toBe("NO_BILL_ID");
-
-    const badUuid = await calculateQuoteTool.execute({ billId: "bad" }, { apiKey: "k", apiUrl: "http://x" });
-    expect(badUuid.success).toBe(false);
-    expect(badUuid.error).toBe("INVALID_BILL_ID");
-
-    const noKey = await calculateQuoteTool.execute(
-      { billId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890" },
-      { apiKey: "", apiUrl: "http://x" },
-    );
-    expect(noKey.success).toBe(false);
-  });
-
-  it("33. download_cfe_receipt pulls a bill from the CFE portal", async () => {
-    // Input validation only — actual download requires Python script + CFE portal
-    const { downloadCFEReceiptTool } = await import("../../tools/download-cfe-receipt.js");
-
-    // Valid-looking input but script won't exist in test env → expect error
-    const result = await downloadCFEReceiptTool.execute(
-      { serviceNumber: "123456789012", serviceName: "Test User", totalToPay: "500.00" },
-      {} as Record<string, never>,
-    );
-    // Should fail because Python script doesn't exist
-    expect(result.success).toBe(false);
-  });
-
   it("34. handoff_lead and block_lead manage lead status", async () => {
     const ctx = createToolContext();
 
@@ -170,7 +118,8 @@ describe("LLM Agent Tool Stories", () => {
   });
 
   it("35. sync_labels, get_labels, create_label, and add_chat_label manage WhatsApp labels", async () => {
-    const { getLabelsTool, createLabelTool, addChatLabelTool } = await import("../../tools/label-ops.js");
+    const { getLabelsTool, createLabelTool, addChatLabelTool } =
+      await import("../../tools/label-ops.js");
     const runtime = createFakeRuntime();
 
     // get_labels returns labels from runtime
@@ -193,7 +142,9 @@ describe("LLM Agent Tool Stories", () => {
 
     // Graceful degradation when runtime methods unavailable
     const minimalRuntime = { async sendMessage() {} };
-    const noLabels = await getLabelsTool.execute({} as Record<string, never>, { runtime: minimalRuntime });
+    const noLabels = await getLabelsTool.execute({} as Record<string, never>, {
+      runtime: minimalRuntime,
+    });
     expect(noLabels.success).toBe(false);
   });
 

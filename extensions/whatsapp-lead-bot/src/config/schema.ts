@@ -129,28 +129,12 @@ const zodSchema = z.object({
       tags: { FUERA_DE_AREA: "Fuera de área" },
     }),
 
-  // Supabase edge function URLs
-  supabaseQuoteUrl: z
+  // Consolidated parse-and-quote Supabase edge function URL.
+  // API key is read from CFE_PARSER_API_KEY env var (no config override).
+  parseAndQuoteUrl: z
     .string()
     .url()
-    .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/calculate-quote"),
-  supabaseCfeBillUrl: z
-    .string()
-    .url()
-    .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/parse-cfe-bill"),
-
-  // Receipt extraction (CFE recibos) — always active when SUPABASE_API_KEY env var exists
-  // These are optional overrides only
-  receiptExtraction: z
-    .object({
-      apiKey: z.string().optional().describe("Override for SUPABASE_API_KEY env var"),
-      mediaDir: z.string().default("~/.openclaw/media/inbound"),
-      maxAgeSeconds: z.number().default(10),
-      maxAttemptsPerLead: z.number().default(3),
-      maxFileSizeMB: z.number().default(5),
-      timeoutSeconds: z.number().default(30),
-    })
-    .optional(),
+    .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/parse-and-quote"),
 });
 
 export type WhatsAppLeadBotConfig = z.infer<typeof zodSchema>;
