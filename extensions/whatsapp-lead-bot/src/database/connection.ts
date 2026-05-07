@@ -33,6 +33,7 @@ import {
   MIGRATE_V8_TO_V9_DDL,
   MIGRATE_V9_TO_V10_DDL,
   MIGRATE_V10_TO_V11_DDL,
+  MIGRATE_V11_TO_V12_DDL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -164,6 +165,21 @@ export class SqliteDatabase implements DatabaseInterface {
       if (versionRow.version < 11) {
         // v10→v11: add peer_e164 column + index for E.164-keyed lookups (LID-aware)
         for (const stmt of MIGRATE_V10_TO_V11_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
+      }
+      if (versionRow.version < 12) {
+        // v11→v12: follow-up tracking columns on leads
+        for (const stmt of MIGRATE_V11_TO_V12_DDL.split(";")) {
           const trimmed = stmt.trim();
           if (trimmed) {
             try {
@@ -441,6 +457,49 @@ export class SqliteDatabase implements DatabaseInterface {
       LIMIT ?
     `)
       .all(cutoff, cutoff, maxFollowups) as Lead[];
+
+    return rows;
+  }
+
+  async getFollowupCandidates(params?: {
+    scores?: string[];
+    statuses?: string[];
+    limit?: number;
+    minIdleMs?: number;
+    maxAttempts?: number;
+  }): Promise<Lead[]> {
+    const scores = params?.scores ?? ["HOT", "WARM"];
+    const statuses = params?.statuses ?? ["new", "qualifying"];
+    const limit = params?.limit ?? 5;
+    const minIdleMs = params?.minIdleMs ?? 3 * 24 * 60 * 60 * 1000; // 3 days
+    const maxAttempts = params?.maxAttempts ?? 3;
+
+    const cutoff = Date.now() - minIdleMs;
+    const scorePlaceholders = scores.map(() => "?").join(", ");
+    const statusPlaceholders = statuses.map(() => "?").join(", ");
+
+    const rows = this.db
+      .prepare(
+        `SELECT l.* FROM leads l
+         WHERE l.score IN (${scorePlaceholders})
+           AND l.status IN (${statusPlaceholders})
+           AND l.last_message_at < ?
+           AND (l.follow_up_attempts IS NULL OR l.follow_up_attempts < ?)
+           AND l.handed_off_at IS NULL
+           AND l.blocked_at IS NULL
+           AND l.rate_limited_at IS NULL
+           AND LENGTH(REPLACE(l.phone_number, '+', '')) BETWEEN 10 AND 15
+           AND REPLACE(l.phone_number, '+', '') GLOB '[0-9]*'
+           AND REPLACE(l.phone_number, '+', '') NOT GLOB '*[^0-9]*'
+           AND EXISTS (
+             SELECT 1 FROM messages m
+             WHERE REPLACE(m.peer_e164, '+', '') = REPLACE(l.phone_number, '+', '')
+               AND m.from_me = 0
+           )
+         ORDER BY l.last_message_at ASC
+         LIMIT ?`,
+      )
+      .all(...scores, ...statuses, cutoff, maxAttempts, limit) as Lead[];
 
     return rows;
   }
@@ -898,9 +957,7 @@ export class SqliteDatabase implements DatabaseInterface {
   // Synchronous reader keyed by E.164 (uses idx_messages_peer_e164).
   getMessagesByPeerE164Sync(peerE164: string, limit = 100): StoredMessage[] {
     return this.db
-      .prepare(
-        "SELECT * FROM messages WHERE peer_e164 = ? ORDER BY timestamp ASC LIMIT ?",
-      )
+      .prepare("SELECT * FROM messages WHERE peer_e164 = ? ORDER BY timestamp ASC LIMIT ?")
       .all(peerE164, limit) as StoredMessage[];
   }
 

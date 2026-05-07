@@ -192,7 +192,13 @@ ALTER TABLE messages ADD COLUMN peer_e164 TEXT;
 CREATE INDEX IF NOT EXISTS idx_messages_peer_e164 ON messages(peer_e164, timestamp);
 `;
 
-export const SCHEMA_VERSION = 11;
+export const MIGRATE_V11_TO_V12_DDL = `
+ALTER TABLE leads ADD COLUMN follow_up_attempts INTEGER DEFAULT 0;
+ALTER TABLE leads ADD COLUMN survey_sent_at INTEGER;
+ALTER TABLE leads ADD COLUMN instagram_reminder_sent_at INTEGER;
+`;
+
+export const SCHEMA_VERSION = 12;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking
@@ -232,6 +238,9 @@ CREATE TABLE IF NOT EXISTS leads (
   tariff TEXT,
   annual_kwh REAL,
   custom_fields TEXT DEFAULT '{}',
+  follow_up_attempts INTEGER DEFAULT 0,
+  survey_sent_at INTEGER,
+  instagram_reminder_sent_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

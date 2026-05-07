@@ -36,6 +36,13 @@ export interface LeadRepository {
   unblockLead(leadId: number): Promise<void>;
   resetLead(leadId: number): Promise<void>;
   getSilentLeads(thresholdHours: number, maxFollowups: number): Promise<Lead[]>;
+  getFollowupCandidates(params?: {
+    scores?: string[];
+    statuses?: string[];
+    limit?: number;
+    minIdleMs?: number;
+    maxAttempts?: number;
+  }): Promise<Lead[]>;
   updateFollowUpSentAt(id: number, timestamp: number): Promise<void>;
   getStats(): Promise<LeadStats>;
   getRecentLeads(limit: number): Promise<Lead[]>;
