@@ -15,11 +15,9 @@ const PROMPTS: Record<LeadState, string> = {
 
   AWAITING_NAME: "Estado: AWAITING_NAME — pregunta el nombre del cliente.",
 
-  AWAITING_LOCATION:
-    "Estado: AWAITING_LOCATION — pregunta el municipio en Sinaloa.",
+  AWAITING_LOCATION: "Estado: AWAITING_LOCATION — pregunta el municipio en Sinaloa.",
 
-  AWAITING_OWNERSHIP:
-    "Estado: AWAITING_OWNERSHIP — confirma si es propietario del inmueble.",
+  AWAITING_OWNERSHIP: "Estado: AWAITING_OWNERSHIP — confirma si es propietario del inmueble.",
 
   AWAITING_PROPERTY_TYPE:
     "Estado: AWAITING_PROPERTY_TYPE — pregunta si el uso es habitacional o comercial.",
@@ -31,16 +29,14 @@ const PROMPTS: Record<LeadState, string> = {
     "Estado: AWAITING_RECEIPT — solicita el recibo CFE con send_receipt_request si aún no lo has pedido en esta conversación. Si ya lo solicitaste, espera. Cuando llegue una foto o PDF, procésalo según el flujo de SALES.md.",
 
   READY_TO_QUOTE:
-    "Estado: READY_TO_QUOTE — invoca send_quote_sequence({ phone, billId }) para enviar la cotización oficial.",
+    "Estado: READY_TO_QUOTE — invoca process_cfe_receipt_customer({ mediaPath, customerPhone }) para entregar la cotización oficial (resumen + PDF en un solo mensaje).",
 
   QUOTED:
-    "Estado: QUOTED — la cotización ya fue enviada. Espera la reacción del cliente. Si pide visita o hablar con asesor, llama send_handoff_to_ale.",
+    "Estado: QUOTED — la cotización ya fue enviada. Espera la reacción del cliente. Si pide visita o hablar con asesor, llama send_handoff_to_ale. Si un coworker pide ajustar la cotización (paneles, precio total, cobertura, datos del cliente), usa edit_quote({ quoteNumber, coworkerPhone, ... }).",
 
-  DISQUALIFIED:
-    "Estado: DISQUALIFIED — el cliente fue descalificado. No respondas más.",
+  DISQUALIFIED: "Estado: DISQUALIFIED — el cliente fue descalificado. No respondas más.",
 
-  HANDED_OFF:
-    "Estado: HANDED_OFF — el lead fue transferido a un asesor humano. No respondas más.",
+  HANDED_OFF: "Estado: HANDED_OFF — el lead fue transferido a un asesor humano. No respondas más.",
 };
 
 export function buildStatePromptContext(state: LeadState): string {

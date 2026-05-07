@@ -7,9 +7,9 @@ import { createTestDb } from "../helpers/tmp-db.js";
 
 describe("phoneFromSessionKey", () => {
   it("extracts phone from a well-formed sessionKey", () => {
-    expect(
-      phoneFromSessionKey("agent:solayre-leads:whatsapp:default:direct:526671234567"),
-    ).toBe("526671234567");
+    expect(phoneFromSessionKey("agent:solayre-leads:whatsapp:default:direct:526671234567")).toBe(
+      "526671234567",
+    );
   });
 
   it("returns null for malformed keys", () => {
@@ -62,7 +62,7 @@ describe("before_prompt_build handler", () => {
     );
 
     expect(result?.prependContext).toContain("READY_TO_QUOTE");
-    expect(result?.prependContext).toContain("send_quote_sequence");
+    expect(result?.prependContext).toContain("process_cfe_receipt_customer");
   });
 
   it("returns nothing for non-whatsapp channels", async () => {

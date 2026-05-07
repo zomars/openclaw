@@ -135,6 +135,13 @@ const zodSchema = z.object({
     .string()
     .url()
     .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/parse-and-quote"),
+
+  // Synchronous quote-revision endpoint. Produces an incremented version of an
+  // existing quote (panels, totalInvestment, targetCoverage, clientInfo, ...).
+  editQuoteUrl: z
+    .string()
+    .url()
+    .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/calculate-quote"),
 });
 
 export type WhatsAppLeadBotConfig = z.infer<typeof zodSchema>;

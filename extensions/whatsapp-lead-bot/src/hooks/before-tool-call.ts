@@ -100,7 +100,8 @@ const BLOCK_REASON_TEMPLATE =
   'Tu mensaje fue bloqueado por el guardrail. Detecté: "{match}" (regla: {pattern}). ' +
   "PROHIBIDO escribir precios, financiamiento, números de paneles, kWh o porcentajes en texto libre. " +
   "Usa el tool blindado correspondiente: " +
-  "send_quote_sequence(billId) para cotizar, " +
+  "process_cfe_receipt_customer({ mediaPath, customerPhone }) para entregar la cotización oficial (PDF + resumen), " +
+  "edit_quote({ quoteNumber, coworkerPhone, ... }) para ajustar una cotización existente, " +
   "send_disqualification(phone, reason) para descalificar OUT. " +
   "Reintenta este turno sin escribir cifras del sistema.";
 
@@ -172,7 +173,9 @@ export function createBeforeToolCallHandler(deps: BeforeToolCallHandlerDeps = {}
     // state machine and pricing guardrail are lead-funnel specific.
     if (deps.expectedAgentId) {
       const invokingAgent = agentIdFromSessionKey(ctx?.sessionKey);
-      if (invokingAgent !== deps.expectedAgentId) return;
+      if (invokingAgent !== deps.expectedAgentId) {
+        return;
+      }
     }
 
     // Layer 2: tool gating (only when DB is wired and we can resolve a lead).

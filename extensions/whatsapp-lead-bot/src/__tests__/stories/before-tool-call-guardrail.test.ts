@@ -98,7 +98,7 @@ describe("before_tool_call guardrail handler", () => {
       evt("message", { action: "send", target: "whatsapp:526671", message: "El total es $50,000" }),
     );
     expect(result).toMatchObject({ block: true });
-    expect(result?.blockReason).toContain("send_quote_sequence");
+    expect(result?.blockReason).toContain("process_cfe_receipt_customer");
     expect(result?.blockReason).toContain("$50,000");
   });
 

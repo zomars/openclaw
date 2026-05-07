@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { allowedToolsForState, isToolAllowedInState } from "../../flow/allowed-tools.js";
+import { buildStatePromptContext } from "../../flow/state-prompts.js";
 import {
   computeLeadState,
   isOwner,
@@ -6,8 +8,6 @@ import {
   leadStateInputFromRow,
   type LeadFieldsForState,
 } from "../../flow/state.js";
-import { allowedToolsForState, isToolAllowedInState } from "../../flow/allowed-tools.js";
-import { buildStatePromptContext } from "../../flow/state-prompts.js";
 
 function lead(overrides: Partial<LeadFieldsForState> = {}): LeadFieldsForState {
   return {
@@ -102,15 +102,20 @@ describe("computeLeadState — linear progression", () => {
   });
 
   it("AWAITING_PROPERTY_TYPE when name + location + ownership", () => {
-    expect(
-      computeLeadState(lead({ name: "X", location: "Culiacán", ownership: "propia" })),
-    ).toBe("AWAITING_PROPERTY_TYPE");
+    expect(computeLeadState(lead({ name: "X", location: "Culiacán", ownership: "propia" }))).toBe(
+      "AWAITING_PROPERTY_TYPE",
+    );
   });
 
   it("AWAITING_BILL_AMOUNT when qualifying fields filled but no bill", () => {
     expect(
       computeLeadState(
-        lead({ name: "X", location: "Culiacán", ownership: "propia", property_type: "habitacional" }),
+        lead({
+          name: "X",
+          location: "Culiacán",
+          ownership: "propia",
+          property_type: "habitacional",
+        }),
       ),
     ).toBe("AWAITING_BILL_AMOUNT");
   });
@@ -206,11 +211,20 @@ describe("leadStateInputFromRow — extracts billId from receipt_data JSON", () 
 });
 
 describe("allowed-tools tool gating", () => {
-  it("send_quote_sequence is only allowed in READY_TO_QUOTE", () => {
-    expect(isToolAllowedInState("send_quote_sequence", "READY_TO_QUOTE")).toBe(true);
-    expect(isToolAllowedInState("send_quote_sequence", "AWAITING_NAME")).toBe(false);
-    expect(isToolAllowedInState("send_quote_sequence", "AWAITING_RECEIPT")).toBe(false);
-    expect(isToolAllowedInState("send_quote_sequence", "QUOTED")).toBe(false);
+  it("process_cfe_receipt_customer is allowed once the receipt is in scope", () => {
+    // Consolidated tool: parses the bill AND delivers the quote in one call.
+    // Allowed in AWAITING_RECEIPT (when the customer sends the file) and in
+    // READY_TO_QUOTE (re-quote without re-asking).
+    expect(isToolAllowedInState("process_cfe_receipt_customer", "AWAITING_RECEIPT")).toBe(true);
+    expect(isToolAllowedInState("process_cfe_receipt_customer", "READY_TO_QUOTE")).toBe(true);
+    expect(isToolAllowedInState("process_cfe_receipt_customer", "AWAITING_NAME")).toBe(false);
+    expect(isToolAllowedInState("process_cfe_receipt_customer", "QUOTED")).toBe(false);
+  });
+
+  it("edit_quote is only allowed in QUOTED", () => {
+    expect(isToolAllowedInState("edit_quote", "QUOTED")).toBe(true);
+    expect(isToolAllowedInState("edit_quote", "READY_TO_QUOTE")).toBe(false);
+    expect(isToolAllowedInState("edit_quote", "AWAITING_RECEIPT")).toBe(false);
   });
 
   it("send_handoff_to_ale is only allowed in QUOTED", () => {
@@ -240,8 +254,8 @@ describe("allowed-tools tool gating", () => {
   });
 
   it("DISQUALIFIED and HANDED_OFF allow no state-dependent tools", () => {
-    expect(isToolAllowedInState("send_quote_sequence", "DISQUALIFIED")).toBe(false);
-    expect(isToolAllowedInState("send_quote_sequence", "HANDED_OFF")).toBe(false);
+    expect(isToolAllowedInState("process_cfe_receipt_customer", "DISQUALIFIED")).toBe(false);
+    expect(isToolAllowedInState("process_cfe_receipt_customer", "HANDED_OFF")).toBe(false);
     expect(isToolAllowedInState("message", "DISQUALIFIED")).toBe(false);
     expect(isToolAllowedInState("message", "HANDED_OFF")).toBe(false);
   });
@@ -254,9 +268,9 @@ describe("allowed-tools tool gating", () => {
 
   it("allowedToolsForState returns sorted list including always-allowed", () => {
     const allowed = allowedToolsForState("READY_TO_QUOTE");
-    expect(allowed).toContain("send_quote_sequence");
+    expect(allowed).toContain("process_cfe_receipt_customer");
     expect(allowed).toContain("get_lead");
-    expect([...allowed]).toEqual([...allowed].sort());
+    expect([...allowed]).toEqual([...allowed].toSorted());
   });
 });
 
@@ -283,9 +297,9 @@ describe("buildStatePromptContext", () => {
     }
   });
 
-  it("READY_TO_QUOTE prompt directs the LLM to invoke send_quote_sequence", () => {
+  it("READY_TO_QUOTE prompt directs the LLM to invoke process_cfe_receipt_customer", () => {
     const ctx = buildStatePromptContext("READY_TO_QUOTE");
-    expect(ctx).toContain("send_quote_sequence");
+    expect(ctx).toContain("process_cfe_receipt_customer");
   });
 
   it("QUOTED prompt directs handoff for visit requests", () => {

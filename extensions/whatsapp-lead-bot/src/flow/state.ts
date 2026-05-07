@@ -79,29 +79,53 @@ export interface LeadFieldsForState {
  */
 export function computeLeadState(lead: LeadFieldsForState): LeadState {
   // Terminal: handed off
-  if (lead.status === "handed_off") return "HANDED_OFF";
+  if (lead.status === "handed_off") {
+    return "HANDED_OFF";
+  }
 
   // Terminal: ignored = disqualified for our purposes
-  if (lead.status === "ignored" || lead.status === "blocked") return "DISQUALIFIED";
-
-  // Disqualifying conditions evaluated against present data
-  if (lead.location && !isSinaloaLocation(lead.location)) return "DISQUALIFIED";
-  if (lead.ownership && !isOwner(lead.ownership)) return "DISQUALIFIED";
-  if (typeof lead.bimonthly_bill === "number" && lead.bimonthly_bill > 0 && lead.bimonthly_bill < 500) {
+  if (lead.status === "ignored" || lead.status === "blocked") {
     return "DISQUALIFIED";
   }
 
-  // Quoted: panels_quoted set means send_quote_sequence has run
-  if (typeof lead.panels_quoted === "number" && lead.panels_quoted > 0) return "QUOTED";
+  // Disqualifying conditions evaluated against present data
+  if (lead.location && !isSinaloaLocation(lead.location)) {
+    return "DISQUALIFIED";
+  }
+  if (lead.ownership && !isOwner(lead.ownership)) {
+    return "DISQUALIFIED";
+  }
+  if (
+    typeof lead.bimonthly_bill === "number" &&
+    lead.bimonthly_bill > 0 &&
+    lead.bimonthly_bill < 500
+  ) {
+    return "DISQUALIFIED";
+  }
+
+  // Quoted: panels_quoted set means a quote has been delivered
+  if (typeof lead.panels_quoted === "number" && lead.panels_quoted > 0) {
+    return "QUOTED";
+  }
 
   // Receipt parsed → ready to quote
-  if (lead.bill_id) return "READY_TO_QUOTE";
+  if (lead.bill_id) {
+    return "READY_TO_QUOTE";
+  }
 
   // Linear qualification flow
-  if (!lead.name) return "AWAITING_NAME";
-  if (!lead.location) return "AWAITING_LOCATION";
-  if (!lead.ownership) return "AWAITING_OWNERSHIP";
-  if (!lead.property_type) return "AWAITING_PROPERTY_TYPE";
+  if (!lead.name) {
+    return "AWAITING_NAME";
+  }
+  if (!lead.location) {
+    return "AWAITING_LOCATION";
+  }
+  if (!lead.ownership) {
+    return "AWAITING_OWNERSHIP";
+  }
+  if (!lead.property_type) {
+    return "AWAITING_PROPERTY_TYPE";
+  }
   if (typeof lead.bimonthly_bill !== "number" || lead.bimonthly_bill <= 0) {
     return "AWAITING_BILL_AMOUNT";
   }

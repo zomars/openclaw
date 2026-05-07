@@ -13,13 +13,7 @@ import type { LeadState } from "./state.js";
  * tools that don't drive customer-facing behavior). The intent of gating
  * is to bound *outbound* / state-changing actions, not introspection.
  */
-const ALWAYS_ALLOWED = new Set<string>([
-  "get_lead",
-  "list_leads",
-  "block_lead",
-  "image",
-  "media",
-]);
+const ALWAYS_ALLOWED = new Set<string>(["get_lead", "list_leads", "block_lead", "image", "media"]);
 
 const PER_STATE: Record<LeadState, ReadonlySet<string>> = {
   NEW: new Set(["message", "save_lead"]),
@@ -33,26 +27,28 @@ const PER_STATE: Record<LeadState, ReadonlySet<string>> = {
     "save_lead",
     "send_receipt_request",
     "send_disqualification",
-    "download_cfe_receipt",
-    "parse_cfe_receipt",
+    "process_cfe_receipt",
+    "process_cfe_receipt_customer",
     "save_receipt_data",
   ]),
   READY_TO_QUOTE: new Set([
-    "send_quote_sequence",
-    "calculate_quote",
+    "process_cfe_receipt",
+    "process_cfe_receipt_customer",
     "message",
     "save_lead",
   ]),
-  QUOTED: new Set(["message", "send_handoff_to_ale", "save_lead"]),
+  QUOTED: new Set(["message", "send_handoff_to_ale", "save_lead", "edit_quote"]),
   DISQUALIFIED: new Set([]),
   HANDED_OFF: new Set([]),
 };
 
 export function isToolAllowedInState(toolName: string, state: LeadState): boolean {
-  if (ALWAYS_ALLOWED.has(toolName)) return true;
+  if (ALWAYS_ALLOWED.has(toolName)) {
+    return true;
+  }
   return PER_STATE[state].has(toolName);
 }
 
 export function allowedToolsForState(state: LeadState): string[] {
-  return [...ALWAYS_ALLOWED, ...PER_STATE[state]].sort();
+  return [...ALWAYS_ALLOWED, ...PER_STATE[state]].toSorted();
 }

@@ -38,7 +38,7 @@ describe("before_tool_call strike counter + escalation", () => {
     const result = await handler(priceMessage("le sale en $50,000"), { sessionKey: SESSION });
 
     expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("send_quote_sequence");
+    expect(result?.blockReason).toContain("process_cfe_receipt_customer");
     expect(escalations).toHaveLength(0);
     expect(violations.count("526671000070")).toBe(1);
   });
@@ -87,7 +87,7 @@ describe("before_tool_call strike counter + escalation", () => {
 
     const second = await handler(priceMessage("$80,000"), { sessionKey: SESSION });
     expect(second?.block).toBe(true);
-    expect(second?.blockReason).toContain("send_quote_sequence");
+    expect(second?.blockReason).toContain("process_cfe_receipt_customer");
     expect(escalations).toHaveLength(0);
   });
 

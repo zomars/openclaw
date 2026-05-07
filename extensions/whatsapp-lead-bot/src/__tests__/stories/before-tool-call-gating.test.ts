@@ -10,19 +10,19 @@ function evt(toolName: string, params: Record<string, unknown>): PluginHookBefor
 }
 
 describe("before_tool_call tool gating", () => {
-  it("blocks send_quote_sequence when lead is in AWAITING_NAME", async () => {
+  it("blocks process_cfe_receipt_customer when lead is in AWAITING_NAME", async () => {
     const { db } = createTestDb();
     await db.upsertLead("526671000060", {}); // bare lead → AWAITING_NAME
 
     const handler = createBeforeToolCallHandler({ db });
     const result = await handler(
-      evt("send_quote_sequence", { phone: "526671000060", billId: "uuid" }),
+      evt("process_cfe_receipt_customer", { phone: "526671000060", billId: "uuid" }),
       { sessionKey: SESSION },
     );
 
     expect(result?.block).toBe(true);
     expect(result?.blockReason).toContain("AWAITING_NAME");
-    expect(result?.blockReason).toContain("send_quote_sequence");
+    expect(result?.blockReason).toContain("process_cfe_receipt_customer");
   });
 
   it("allows save_lead in AWAITING_NAME", async () => {
@@ -30,15 +30,14 @@ describe("before_tool_call tool gating", () => {
     await db.upsertLead("526671000061", {});
 
     const handler = createBeforeToolCallHandler({ db });
-    const result = await handler(
-      evt("save_lead", { phone: "526671000061", name: "Pedro" }),
-      { sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000061" },
-    );
+    const result = await handler(evt("save_lead", { phone: "526671000061", name: "Pedro" }), {
+      sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000061",
+    });
 
     expect(result).toBeUndefined();
   });
 
-  it("allows send_quote_sequence in READY_TO_QUOTE", async () => {
+  it("allows process_cfe_receipt_customer in READY_TO_QUOTE", async () => {
     const { db } = createTestDb();
     await db.upsertLead("526671000062", {
       name: "Pedro",
@@ -54,7 +53,7 @@ describe("before_tool_call tool gating", () => {
 
     const handler = createBeforeToolCallHandler({ db });
     const result = await handler(
-      evt("send_quote_sequence", { phone: "526671000062", billId: "uuid-abc" }),
+      evt("process_cfe_receipt_customer", { phone: "526671000062", billId: "uuid-abc" }),
       { sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000062" },
     );
 
@@ -84,10 +83,9 @@ describe("before_tool_call tool gating", () => {
     await db.updateLeadStatus(lead!.id, "handed_off");
 
     const handler = createBeforeToolCallHandler({ db });
-    const result = await handler(
-      evt("get_lead", { phone: "526671000064" }),
-      { sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000064" },
-    );
+    const result = await handler(evt("get_lead", { phone: "526671000064" }), {
+      sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000064",
+    });
 
     expect(result).toBeUndefined();
   });
@@ -100,7 +98,7 @@ describe("before_tool_call tool gating", () => {
     expect(blocked?.block).toBe(true);
 
     const allowed = await handler(
-      evt("send_quote_sequence", { phone: "x", billId: "uuid" }),
+      evt("process_cfe_receipt_customer", { phone: "x", billId: "uuid" }),
     );
     expect(allowed).toBeUndefined();
   });
@@ -111,7 +109,7 @@ describe("before_tool_call tool gating", () => {
 
     const handler = createBeforeToolCallHandler({ db, dryRun: true });
     const result = await handler(
-      evt("send_quote_sequence", { phone: "526671000065", billId: "uuid" }),
+      evt("process_cfe_receipt_customer", { phone: "526671000065", billId: "uuid" }),
       { sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000065" },
     );
 

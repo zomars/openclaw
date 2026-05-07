@@ -37,6 +37,8 @@ import { RateLimiter } from "./src/rate-limit/limiter.js";
 import type { Runtime } from "./src/runtime.js";
 import { FileSessionResetter } from "./src/session-resetter/file-resetter.js";
 import { blockLeadTool } from "./src/tools/block-lead.js";
+import { editQuoteTool } from "./src/tools/edit-quote.js";
+import { getFollowupCandidatesTool } from "./src/tools/get-followup-candidates.js";
 import { getLeadTool } from "./src/tools/get-lead.js";
 import { handoffLeadTool } from "./src/tools/handoff-lead.js";
 import { addChatLabelTool, createLabelTool, getLabelsTool } from "./src/tools/label-ops.js";
@@ -228,7 +230,7 @@ const plugin = {
     const cfeApiKey = process.env.SUPABASE_API_KEY;
     if (!cfeApiKey) {
       console.warn(
-        "[whatsapp-lead-bot] No SUPABASE_API_KEY — process_cfe_receipt(_customer) disabled",
+        "[whatsapp-lead-bot] No SUPABASE_API_KEY — process_cfe_receipt(_customer) and edit_quote disabled",
       );
     }
     const mediaHandler = new MediaHandler();
@@ -401,6 +403,7 @@ const plugin = {
       const parseAndQuoteClient = createParseAndQuoteClient({
         apiKey: cfeApiKey,
         apiUrl: config.parseAndQuoteUrl,
+        editQuoteUrl: config.editQuoteUrl,
       });
       const saveLeadDep = async (input: { phone: string; name: string; notes?: string }) => {
         const result = (await saveLeadTool.execute(
@@ -451,9 +454,17 @@ const plugin = {
         runtime,
         outputDir: cfeOutputDir,
       });
+
+      registerPluginTool("Edit Quote", editQuoteTool, {
+        editQuote: (input) => parseAndQuoteClient.editQuote(input),
+        db,
+        runtime,
+        downloadFile: downloadFileDep,
+        outputDir: cfeOutputDir,
+      });
     } else {
       console.warn(
-        "[whatsapp-lead-bot] process_cfe_receipt(_customer) disabled (requires SUPABASE_API_KEY)",
+        "[whatsapp-lead-bot] process_cfe_receipt(_customer) and edit_quote disabled (requires SUPABASE_API_KEY)",
       );
     }
 
@@ -461,6 +472,7 @@ const plugin = {
     registerPluginTool("Save Lead", saveLeadTool, { db, labelService, runtime });
     registerPluginTool("Get Lead", getLeadTool, { db });
     registerPluginTool("List Leads", listLeadsTool, { db });
+    registerPluginTool("Get Followup Candidates", getFollowupCandidatesTool, { db });
     registerPluginTool("Handoff Lead", handoffLeadTool, {
       db,
       labelService,
