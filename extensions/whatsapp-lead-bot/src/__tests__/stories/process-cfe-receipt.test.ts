@@ -17,7 +17,7 @@ const SAMPLE_OK: ParseAndQuoteResult = {
   quote: {
     panelCount: 12,
     cashPrice: 180000,
-    financedPrice: 220000,
+    listPrice: 220000,
     annualSavings: 18000,
     coveragePercent: 95,
     paybackYears: 4.2,

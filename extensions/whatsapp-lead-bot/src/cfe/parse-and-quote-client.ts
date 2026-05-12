@@ -14,7 +14,7 @@ export interface ParseAndQuoteResult {
   quote: {
     panelCount: number;
     cashPrice: number;
-    financedPrice: number;
+    listPrice: number;
     annualSavings: number;
     coveragePercent: number;
     paybackYears: number;
@@ -127,11 +127,12 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
   const quoteId = str(json.quoteId);
   const quoteNumber = str(json.quoteNumber);
   const pdfUrl = str(json.pdfUrl);
-  const panelCount = num(q.panelCount);
-  const cashPrice = num(q.cashPrice);
-  const financedPrice = num(q.financedPrice);
+  // Map current API field names; keep legacy names as fallback for older fixtures/tests.
+  const panelCount = num(q.panelsNeeded ?? q.panelCount);
+  const cashPrice = num(q.promotionalPrice ?? q.cashPrice);
+  const listPrice = num(q.totalSystemCostMxn ?? q.listPrice);
   const annualSavings = num(q.annualSavings);
-  const coveragePercent = num(q.coveragePercent);
+  const coveragePercent = num(q.actualCoverage ?? q.coveragePercent);
   const paybackYears = num(q.paybackYears);
 
   const required = {
@@ -140,7 +141,7 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
     pdfUrl,
     panelCount,
     cashPrice,
-    financedPrice,
+    listPrice,
     annualSavings,
     coveragePercent,
     paybackYears,
@@ -151,7 +152,7 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
     }
   }
 
-  const systemKwRaw = num(q.systemKw);
+  const systemKwRaw = num(q.actualInstalledPowerKw ?? q.systemKw);
   const cfe = (json.cfe ?? undefined) as ParseAndQuoteResult["cfe"];
 
   return {
@@ -162,7 +163,7 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
     quote: {
       panelCount,
       cashPrice,
-      financedPrice,
+      listPrice,
       annualSavings,
       coveragePercent,
       paybackYears,
@@ -389,27 +390,22 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
         | undefined;
       let quote: ParseAndQuoteResult["quote"] | undefined;
       if (results) {
-        const panelCount = num(results.panelCount);
-        const cashPrice = num(results.cashPrice);
-        const financedPrice = num(results.financedPrice);
+        const panelCount = num(results.panelsNeeded ?? results.panelCount);
+        const cashPrice = num(results.promotionalPrice ?? results.cashPrice);
+        const listPrice = num(results.totalSystemCostMxn ?? results.listPrice);
         const annualSavings = num(results.annualSavings);
-        const coveragePercent = num(results.coveragePercent);
+        const coveragePercent = num(results.actualCoverage ?? results.coveragePercent);
         const paybackYears = num(results.paybackYears);
         if (
-          [
-            panelCount,
-            cashPrice,
-            financedPrice,
-            annualSavings,
-            coveragePercent,
-            paybackYears,
-          ].every((v) => Number.isFinite(v))
+          [panelCount, cashPrice, listPrice, annualSavings, coveragePercent, paybackYears].every(
+            (v) => Number.isFinite(v),
+          )
         ) {
-          const systemKwRaw = num(results.systemKw);
+          const systemKwRaw = num(results.actualInstalledPowerKw ?? results.systemKw);
           quote = {
             panelCount,
             cashPrice,
-            financedPrice,
+            listPrice,
             annualSavings,
             coveragePercent,
             paybackYears,

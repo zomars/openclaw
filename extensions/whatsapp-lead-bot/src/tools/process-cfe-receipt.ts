@@ -205,7 +205,7 @@ function buildSummaryMessage(input: {
     `• Paneles: ${input.quote.panelCount}`,
     `• Cobertura: ${input.quote.coveragePercent}%`,
     `• Inversión contado: ${fmt(input.quote.cashPrice)}`,
-    `• Inversión financiada: ${fmt(input.quote.financedPrice)}`,
+    `• Inversión total: ${fmt(input.quote.listPrice)}`,
     `• Ahorro anual: ${fmt(input.quote.annualSavings)}`,
     `• ROI: ${input.quote.paybackYears.toFixed(1)} años`,
   ].join("\n");

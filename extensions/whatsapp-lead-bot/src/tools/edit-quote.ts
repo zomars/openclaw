@@ -240,7 +240,7 @@ function buildRevisionSummary(result: EditQuoteResult): string {
       `• Paneles: ${result.quote.panelCount}`,
       `• Cobertura: ${result.quote.coveragePercent}%`,
       `• Inversión contado: ${fmt(result.quote.cashPrice)}`,
-      `• Inversión financiada: ${fmt(result.quote.financedPrice)}`,
+      `• Inversión total: ${fmt(result.quote.listPrice)}`,
       `• Ahorro anual: ${fmt(result.quote.annualSavings)}`,
       `• ROI: ${result.quote.paybackYears.toFixed(1)} años`,
     );
