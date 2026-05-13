@@ -148,6 +148,10 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
   };
   for (const [k, v] of Object.entries(required)) {
     if (typeof v === "number" ? !Number.isFinite(v) : !v) {
+      console.error(
+        `[parse-and-quote-client] response missing field: ${k}. Raw JSON:`,
+        JSON.stringify(json),
+      );
       return { success: false, error: `response missing field: ${k}` };
     }
   }

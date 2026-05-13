@@ -27,7 +27,13 @@ export interface ProcessCFEReceiptDeps {
   outputDir: string;
 }
 
-const ERR_INTERNAL = "Hubo un problema procesando el recibo. Aleyda revisará en cuanto pueda.";
+const ERR_PARSE = "No pude leer el recibo. ¿Me lo puedes reenviar más claro o como PDF?";
+const ERR_QUOTE =
+  "No pude generar la cotización en este momento. Intenta de nuevo en unos segundos.";
+const ERR_DOWNLOAD =
+  "Generé la cotización pero no pude descargar el PDF. Intenta de nuevo en unos segundos.";
+const ERR_PERSIST =
+  "Generé la cotización pero no pude guardar el lead. Intenta de nuevo en unos segundos.";
 const ACK_PROCESSING = "Procesando recibo, dame un momento...";
 
 const inputJsonSchema = {
@@ -102,11 +108,15 @@ export const processCFEReceiptTool = {
       result = await deps.parseAndQuote({ mediaPath, phoneNumber: coworkerPhone });
     } catch (err) {
       console.error("[process_cfe_receipt] parseAndQuote threw:", err);
-      return await sendErr(ERR_INTERNAL);
+      return await sendErr(ERR_QUOTE);
     }
     if (!result.success) {
       console.error("[process_cfe_receipt] parseAndQuote failed:", result.error);
-      return await sendErr(ERR_INTERNAL);
+      const isParseFailure =
+        /MISSING_CANONICAL_IDENTIFIERS|PARSE_CFE_ERROR|MISSING_BILL_ID|CANONICAL_XML_ERROR/i.test(
+          result.error,
+        );
+      return await sendErr(isParseFailure ? ERR_PARSE : ERR_QUOTE);
     }
 
     const customerName = result.cfe?.data?.customerName?.trim() || "Cliente";
@@ -123,7 +133,7 @@ export const processCFEReceiptTool = {
       leadId = saved.leadId;
     } catch (err) {
       console.error("[process_cfe_receipt] saveLead failed:", err);
-      return await sendErr(ERR_INTERNAL);
+      return await sendErr(ERR_PERSIST);
     }
 
     // 4. Save quote reference (best-effort)
@@ -146,7 +156,7 @@ export const processCFEReceiptTool = {
       );
     } catch (err) {
       console.error("[process_cfe_receipt] downloadFile failed:", err);
-      return await sendErr(ERR_INTERNAL);
+      return await sendErr(ERR_DOWNLOAD);
     }
 
     // 6. Send summary + attachment
