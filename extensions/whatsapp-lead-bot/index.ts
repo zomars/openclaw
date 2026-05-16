@@ -18,6 +18,7 @@ import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
 import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
+import { createAttributionOverrideHandler } from "./src/hooks/attribution-override.js";
 import { createBeforePromptBuildHandler } from "./src/hooks/before-prompt-build.js";
 import { createBeforeToolCallHandler } from "./src/hooks/before-tool-call.js";
 import { HandoffInterceptor } from "./src/hooks/handoff-interceptor.js";
@@ -307,6 +308,12 @@ const plugin = {
     );
 
     api.on("message_sent", withContext(getRuntime, createMessageSentHandler)({ messageQueue }));
+
+    // Attribution override runs first so the LLM-supplied phone is replaced
+    // with the runtime sender before any downstream hook or tool sees it.
+    // Registered with no expectedAgentId filter — applies to every agent that
+    // uses this plugin's tools (solayre-coworker, solayre-leads, etc).
+    api.on("before_tool_call", createAttributionOverrideHandler());
 
     const violationTracker = new ViolationTracker();
     api.on(
