@@ -64,7 +64,6 @@ describe("Lead / Customer Stories", () => {
     const config = createTestConfig({
       whatsappAccounts: ["acct-1"],
       agentNumbers: [],
-      teamNumbers: [],
     });
     const notifier = new FakeNotifier();
     const handoffManager = new HandoffManager(db, notifier);

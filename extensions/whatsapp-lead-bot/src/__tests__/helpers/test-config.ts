@@ -7,7 +7,6 @@ export function createTestConfig(
     enabled: true,
     whatsappAccounts: ["default"],
     agentNumbers: ["+15559999999"],
-    teamNumbers: [],
     rateLimit: {
       enabled: true,
       messagesPerHour: 5,

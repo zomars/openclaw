@@ -25,6 +25,16 @@ export interface ProcessCFEReceiptDeps {
   downloadFile: (url: string, destPath: string) => Promise<string>;
   runtime: Runtime;
   outputDir: string;
+  /**
+   * Predicate: returns true when `phone` belongs to a coworker. Coworkers
+   * forwarding a customer's receipt should not be persisted as leads —
+   * doing so keys a row on the coworker's phone and pairs it with the
+   * customer's name, contaminating later identity lookups. Skipping the
+   * lead/quoteId persistence still lets the quote PDF reach the coworker
+   * since the canonical record lives in Supabase. When omitted, every
+   * call persists (preserves the pre-whitelist behavior).
+   */
+  isCoworker?: (phone: string) => Promise<boolean>;
 }
 
 const ERR_PARSE = "No pude leer el recibo. ¿Me lo puedes reenviar más claro o como PDF?";
@@ -122,37 +132,48 @@ export const processCFEReceiptTool = {
     const customerName = result.cfe?.data?.customerName?.trim() || "Cliente";
     const serviceNumber = result.cfe?.data?.serviceNumber;
 
-    // 3. Persist lead under coworker phone
-    let leadId: number;
-    try {
-      const saved = await deps.saveLead({
-        phone: coworkerPhone,
-        name: customerName,
-        notes: `Cotización solicitada por coworker. RPU ${serviceNumber ?? "?"}. Cotización ${result.quoteNumber}.`,
-      });
-      leadId = saved.leadId;
-    } catch (err) {
-      console.error("[process_cfe_receipt] saveLead failed:", err);
-      return await sendErr(ERR_PERSIST);
-    }
+    // 3. Persist lead — skip when sender is a coworker so the leads table is
+    //    never keyed on a coworker's own phone. The canonical quote record
+    //    lives in Supabase under result.quoteId; the PDF still reaches the
+    //    coworker below.
+    const senderIsCoworker = deps.isCoworker ? await deps.isCoworker(coworkerPhone) : false;
+    let leadId: number | undefined;
+    if (!senderIsCoworker) {
+      try {
+        const saved = await deps.saveLead({
+          phone: coworkerPhone,
+          name: customerName,
+          notes: `Cotización solicitada por coworker. RPU ${serviceNumber ?? "?"}. Cotización ${result.quoteNumber}.`,
+        });
+        leadId = saved.leadId;
+      } catch (err) {
+        console.error("[process_cfe_receipt] saveLead failed:", err);
+        return await sendErr(ERR_PERSIST);
+      }
 
-    // 4. Save quote reference (best-effort)
-    try {
-      await deps.saveQuoteId({
-        leadId,
-        quoteId: result.quoteId,
-        quoteNumber: result.quoteNumber,
-      });
-    } catch (err) {
-      console.error("[process_cfe_receipt] saveQuoteId failed (continuing):", err);
+      // 4. Save quote reference (best-effort)
+      try {
+        await deps.saveQuoteId({
+          leadId,
+          quoteId: result.quoteId,
+          quoteNumber: result.quoteNumber,
+        });
+      } catch (err) {
+        console.error("[process_cfe_receipt] saveQuoteId failed (continuing):", err);
+      }
+    } else {
+      console.log(
+        `[process_cfe_receipt] Coworker sender ${coworkerPhone} — quote ${result.quoteNumber} (Supabase quoteId=${result.quoteId}) not persisted locally`,
+      );
     }
 
     // 5. Download quote PDF locally
+    const pdfStem = leadId !== undefined ? `${leadId}` : `cw-${result.quoteNumber}`;
     let quotePdfPath: string;
     try {
       quotePdfPath = await deps.downloadFile(
         result.pdfUrl,
-        `${deps.outputDir}/cotizacion-${leadId}-${Date.now()}.pdf`,
+        `${deps.outputDir}/cotizacion-${pdfStem}-${Date.now()}.pdf`,
       );
     } catch (err) {
       console.error("[process_cfe_receipt] downloadFile failed:", err);
@@ -180,10 +201,14 @@ export const processCFEReceiptTool = {
       });
     } catch (err) {
       console.error("[process_cfe_receipt] final send failed:", err);
-      return { success: false, error: "send_failed", leadId };
+      return { success: false, error: "send_failed", ...(leadId !== undefined && { leadId }) };
     }
 
-    return { success: true, leadId, sentToCoworker: true };
+    return {
+      success: true,
+      ...(leadId !== undefined && { leadId }),
+      sentToCoworker: true,
+    };
   },
 };
 

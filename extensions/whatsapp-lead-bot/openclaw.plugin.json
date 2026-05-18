@@ -20,12 +20,15 @@
       "agentNumbers": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "Phone numbers to receive handoff/lead notifications"
+        "description": "Subset of coworkers that receive bot alerts (handoff, new lead, rate-limit). Must be a subset of the coworker whitelist resolved via coworkerAgentId."
       },
-      "teamNumbers": {
-        "type": "array",
-        "items": { "type": "string" },
-        "description": "Phone numbers that bypass lead pipeline (coworker mode)"
+      "coworkerAgentId": {
+        "type": "string",
+        "description": "Agent id in openclaw.json bindings whose direct peers are treated as coworkers (bypass lead pipeline, skip lead persistence). The bindings are the single source of truth for coworker identification."
+      },
+      "openclawConfigPath": {
+        "type": "string",
+        "description": "Path to openclaw.json for the coworker whitelist. Defaults to $OPENCLAW_CONFIG_PATH or $OPENCLAW_STATE_DIR/openclaw.json or ~/.openclaw/openclaw.json."
       },
       "dryRunPrefixes": {
         "type": "array",

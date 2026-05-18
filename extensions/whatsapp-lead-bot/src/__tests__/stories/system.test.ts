@@ -187,9 +187,15 @@ describe("System / Operations Stories", () => {
     const notifier = new FakeNotifier();
     const config = createTestConfig({
       whatsappAccounts: ["acct-1"],
-      teamNumbers: ["+15557777777"],
       agentNumbers: ["+15558888888"],
     });
+
+    // Whitelist holds both numbers in canonical form. `+15558888888` is also
+    // in `agentNumbers` so it receives bot notifications, but `filterTeamMember`
+    // only looks at the whitelist — agentNumbers is a strict subset.
+    const coworkerWhitelist = {
+      load: async () => new Set(["15557777777", "15558888888"]),
+    };
 
     const handoffManager = new HandoffManager(db, notifier);
     const rateLimiter = new RateLimiter(db, {
@@ -223,6 +229,7 @@ describe("System / Operations Stories", () => {
       agentNotifier,
       handoffManager,
       handoffInterceptor,
+      coworkerWhitelist,
     });
 
     const getRuntime = () => runtime;
@@ -296,12 +303,12 @@ describe("System / Operations Stories", () => {
         media_type: null,
         media_filename: null,
         media_size: null,
-      media_path: null,
-      reaction_emoji: null,
-      reaction_target_id: null,
-      revoked_target_id: null,
-      edited_from_id: null,
-      peer_e164: null,
+        media_path: null,
+        reaction_emoji: null,
+        reaction_target_id: null,
+        revoked_target_id: null,
+        edited_from_id: null,
+        peer_e164: null,
         created_at: now,
       },
       {
@@ -315,12 +322,12 @@ describe("System / Operations Stories", () => {
         media_type: null,
         media_filename: null,
         media_size: null,
-      media_path: null,
-      reaction_emoji: null,
-      reaction_target_id: null,
-      revoked_target_id: null,
-      edited_from_id: null,
-      peer_e164: null,
+        media_path: null,
+        reaction_emoji: null,
+        reaction_target_id: null,
+        revoked_target_id: null,
+        edited_from_id: null,
+        peer_e164: null,
         created_at: now,
       },
     ]);

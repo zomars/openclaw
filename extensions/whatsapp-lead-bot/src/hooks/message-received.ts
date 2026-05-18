@@ -4,6 +4,7 @@
  */
 
 import type { AdminCommandHandler } from "../admin/commands.js";
+import type { CoworkerWhitelistSource } from "../config/coworker-whitelist.js";
 import type { WhatsAppLeadBotConfig } from "../config/schema.js";
 import { getContext } from "../context.js";
 import type { Database } from "../database.js";
@@ -32,6 +33,14 @@ export interface MessageReceivedHandlerDeps {
   agentNotifier: AgentNotifier;
   handoffManager: HandoffManager;
   handoffInterceptor: HandoffInterceptor;
+  /**
+   * Source of truth for "is this sender a coworker?". When the loaded set
+   * contains the sender's normalized phone, the message bypasses the lead
+   * pipeline so a coworker who happens to message this number is never
+   * persisted as a lead and never gets the lead-state prompt injected.
+   * When omitted, no senders are treated as coworkers.
+   */
+  coworkerWhitelist?: CoworkerWhitelistSource;
 }
 
 /** Result from a filter step: return a value to short-circuit, or null to continue. */
@@ -51,7 +60,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
   // --- Pre-lead filters (before lead lookup) ---
 
   function filterChannel({ ctx }: MessageInput): FilterResult {
-    if (ctx.channelId !== "whatsapp") {return {};}
+    if (ctx.channelId !== "whatsapp") {
+      return {};
+    }
     return null;
   }
 
@@ -69,7 +80,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
   }
 
   function filterOpenClawLoop({ event }: MessageInput): FilterResult {
-    if (event.metadata?.openclawInitiated === true) {return { suppress: true };}
+    if (event.metadata?.openclawInitiated === true) {
+      return { suppress: true };
+    }
     return null;
   }
 
@@ -82,7 +95,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
       `[message-received] Self-chat check: from=${from}, to=${to}, isSelfChat=${isSelfChat}`,
     );
 
-    if (!isSelfChat) {return null;}
+    if (!isSelfChat) {
+      return null;
+    }
 
     console.log(`[message-received] Detected self-chat, parsing command: "${content}"`);
     const command = deps.adminHandler.parseCommand(content);
@@ -104,12 +119,13 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     return {};
   }
 
-  function filterTeamMember({ event }: MessageInput): FilterResult {
-    const allTeamNumbers = [...deps.config.teamNumbers, ...deps.config.agentNumbers].map(
-      normalizePhone,
-    );
-    if (allTeamNumbers.includes(normalizePhone(event.from))) {
-      console.log(`[lead-bot] Team member detected: ${event.from} — bypassing lead pipeline`);
+  async function filterTeamMember({ event }: MessageInput): Promise<FilterResult> {
+    if (!deps.coworkerWhitelist) {
+      return null;
+    }
+    const whitelist = await deps.coworkerWhitelist.load();
+    if (whitelist.has(normalizePhone(event.from))) {
+      console.log(`[lead-bot] Coworker detected: ${event.from} — bypassing lead pipeline`);
       return {};
     }
     return null;
@@ -117,7 +133,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
 
   async function filterWhatsAppWebHandoff({ event }: MessageInput): Promise<FilterResult> {
     const { from, metadata } = event;
-    if (metadata?.sentByAccountOwner !== true) {return null;}
+    if (metadata?.sentByAccountOwner !== true) {
+      return null;
+    }
 
     const lead = await deps.db.getLeadByPhone(from);
     if (lead) {
@@ -136,10 +154,14 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
   }
 
   async function filterRateLimitExpiry({ lead }: LeadMessageInput): Promise<FilterResult> {
-    if (lead.status !== "rate_limited") {return null;}
+    if (lead.status !== "rate_limited") {
+      return null;
+    }
 
     const limitExpired = await deps.rateLimiter.isLimitExpired(lead.id);
-    if (!limitExpired) {return { suppress: true };}
+    if (!limitExpired) {
+      return { suppress: true };
+    }
 
     await deps.rateLimiter.clearLimit(lead.id);
     await deps.db.updateLeadStatus(lead.id, "qualifying");
@@ -148,7 +170,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
 
   async function filterRateLimit({ lead }: LeadMessageInput): Promise<FilterResult> {
     const coordResult = await deps.rateLimitCoordinator.checkAndRecord(lead.id);
-    if (coordResult.allowed) {return null;}
+    if (coordResult.allowed) {
+      return null;
+    }
 
     await deps.db.updateLeadStatus(lead.id, "rate_limited");
     await deps.db.logHandoffEvent(lead.id, "rate_limited", "system", {
@@ -161,7 +185,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
 
   async function filterOptOut({ event, runtime, lead }: LeadMessageInput): Promise<FilterResult> {
     const optOutKeywords = ["stop", "unsubscribe", "quit", "cancel"];
-    if (!optOutKeywords.some((kw) => event.content.toLowerCase().includes(kw))) {return null;}
+    if (!optOutKeywords.some((kw) => event.content.toLowerCase().includes(kw))) {
+      return null;
+    }
 
     await deps.db.updateLeadStatus(lead.id, "ignored");
     await runtime.sendMessage(event.from, {
@@ -192,7 +218,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
       `[message-received] Checking media: mediaType=${mediaType}, hasMediaHandler=${!!deps.mediaHandler}, metadata keys=${Object.keys(metadata || {}).join(",")}`,
     );
 
-    if (!mediaType || mediaType === "text/plain") {return null;}
+    if (!mediaType || mediaType === "text/plain") {
+      return null;
+    }
 
     if (!deps.mediaHandler) {
       console.warn(
@@ -217,7 +245,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
   }
 
   function filterSlashCommand({ event }: LeadMessageInput): FilterResult {
-    if (event.content.trimStart().startsWith("/")) {return { suppress: true };}
+    if (event.content.trimStart().startsWith("/")) {
+      return { suppress: true };
+    }
     return null;
   }
 
@@ -233,7 +263,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     const preLeadFilters = [filterChannel, filterAccount, filterOpenClawLoop];
     for (const filter of preLeadFilters) {
       const result = filter(input);
-      if (result !== null) {return result;}
+      if (result !== null) {
+        return result;
+      }
     }
 
     console.log(
@@ -243,7 +275,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     // Async pre-lead filters
     for (const filter of [filterSelfChat, filterTeamMember, filterWhatsAppWebHandoff] as const) {
       const result = await filter(input);
-      if (result !== null) {return result;}
+      if (result !== null) {
+        return result;
+      }
     }
 
     // --- Lead lookup ---
@@ -276,7 +310,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
 
     // Silent capture: process media/text during handoff before suppressing
     const handoffResult = await deps.handoffInterceptor.handle(leadInput);
-    if (handoffResult !== null) {return handoffResult;}
+    if (handoffResult !== null) {
+      return handoffResult;
+    }
 
     const postLeadFilters = [
       filterLeadStatus,
@@ -288,7 +324,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
 
     for (const filter of postLeadFilters) {
       const result = await filter(leadInput);
-      if (result !== null) {return result;}
+      if (result !== null) {
+        return result;
+      }
     }
 
     // Update timestamp for follow-up tracking
@@ -296,7 +334,9 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
 
     // Slash command filter (after bot reply timestamp update)
     const slashResult = filterSlashCommand(leadInput);
-    if (slashResult !== null) {return slashResult;}
+    if (slashResult !== null) {
+      return slashResult;
+    }
 
     // Let the solayre agent handle the actual conversation
     return {};
