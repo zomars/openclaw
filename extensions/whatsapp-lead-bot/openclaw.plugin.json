@@ -5,6 +5,29 @@
   "description": "AI-powered lead qualification bot for WhatsApp with admin commands, rate limiting, and follow-ups",
   "author": "OpenClaw",
   "license": "MIT",
+  "contracts": {
+    "tools": [
+      "add_chat_label",
+      "block_lead",
+      "create_label",
+      "edit_quote",
+      "get_followup_candidates",
+      "get_labels",
+      "get_lead",
+      "handoff_lead",
+      "list_coworkers",
+      "list_leads",
+      "process_cfe_receipt",
+      "process_cfe_receipt_customer",
+      "save_lead",
+      "save_receipt_data",
+      "send_disqualification",
+      "send_handoff_to_ale",
+      "send_receipt_request",
+      "sync_labels",
+      "whatsapp_history_fetch"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
