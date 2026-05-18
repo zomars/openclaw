@@ -4,203 +4,334 @@ import {
   clearAllCliSessions,
   clearCliSession,
   getCliSessionBinding,
-  getCliSessionId,
+  hashCliSessionText,
   resolveCliSessionReuse,
   setCliSessionBinding,
-  setCliSessionId,
 } from "./cli-session.js";
 
-describe("getCliSessionBinding", () => {
-  it("returns undefined for entries without a CLI binding", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    expect(getCliSessionBinding(entry, "claude-cli")).toBeUndefined();
-  });
-
-  it("hydrates a binding with the stored sessionId and optional auth profile", () => {
+describe("cli-session helpers", () => {
+  it("persists binding metadata alongside legacy session ids", () => {
     const entry: SessionEntry = {
       sessionId: "openclaw-session",
       updatedAt: Date.now(),
-      cliSessionBindings: {
-        "claude-cli": {
-          sessionId: "claude-session",
-          authProfileId: "anthropic:work",
-        },
-      },
     };
-    const binding = getCliSessionBinding(entry, "claude-cli");
-    expect(binding).toEqual({
-      sessionId: "claude-session",
-      authProfileId: "anthropic:work",
-    });
-  });
 
-  it("falls back to the legacy claudeCliSessionId when no binding is present", () => {
-    const entry: SessionEntry = {
-      sessionId: "openclaw-session",
-      updatedAt: Date.now(),
-      claudeCliSessionId: "legacy-session",
-    };
-    expect(getCliSessionBinding(entry, "claude-cli")).toEqual({ sessionId: "legacy-session" });
-  });
-
-  it("ignores pre-fix hash/gate fields when rehydrating a binding", () => {
-    // Regression: bindings persisted by earlier builds carried `authEpoch`,
-    // `mcpConfigHash`, `extraSystemPromptHash`, etc. The new contract drops
-    // those gate fields entirely — hydrated bindings must not expose them,
-    // even if the raw stored shape still has them from an older writer.
-    const entry: SessionEntry = {
-      sessionId: "openclaw-session",
-      updatedAt: Date.now(),
-      cliSessionBindings: {
-        "claude-cli": {
-          sessionId: "claude-session",
-          authProfileId: "anthropic:work",
-          // Legacy JSON fields: not present on the current type but older
-          // writers may have left them in the raw store.
-          ...({
-            authEpoch: "stale-epoch",
-            authEpochVersion: 2,
-            mcpConfigHash: "stale-mcp",
-            extraSystemPromptHash: "stale-prompt",
-          } as Record<string, unknown>),
-        },
-      },
-    };
-    const binding = getCliSessionBinding(entry, "claude-cli");
-    expect(binding).toEqual({
-      sessionId: "claude-session",
-      authProfileId: "anthropic:work",
-    });
-  });
-
-  it("hydrates previousSessionIds when present", () => {
-    const entry: SessionEntry = {
-      sessionId: "openclaw-session",
-      updatedAt: Date.now(),
-      cliSessionBindings: {
-        "claude-cli": {
-          sessionId: "current-session",
-          previousSessionIds: ["older-1", "older-2"],
-        },
-      },
-    };
-    expect(getCliSessionBinding(entry, "claude-cli")).toEqual({
-      sessionId: "current-session",
-      previousSessionIds: ["older-1", "older-2"],
-    });
-  });
-});
-
-describe("setCliSessionBinding", () => {
-  it("writes the binding and maintains legacy mirrors", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
     setCliSessionBinding(entry, "claude-cli", {
       sessionId: "cli-session-1",
+      forceReuse: true,
       authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-hash",
+      mcpConfigHash: "mcp-hash",
+      mcpResumeHash: "mcp-resume-hash",
     });
 
-    expect(entry.cliSessionBindings).toEqual({
-      "claude-cli": {
-        sessionId: "cli-session-1",
-        authProfileId: "anthropic:work",
-      },
-    });
-    expect(entry.cliSessionIds).toEqual({ "claude-cli": "cli-session-1" });
+    expect(entry.cliSessionIds?.["claude-cli"]).toBe("cli-session-1");
     expect(entry.claudeCliSessionId).toBe("cli-session-1");
-  });
-
-  it("ignores empty session IDs", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "   " });
-    expect(entry.cliSessionBindings).toBeUndefined();
-  });
-
-  it("preserves the previous sessionId in previousSessionIds when replaced", () => {
-    // Layer 2: a replaced sessionId is never silently discarded from the
-    // store — it is retained in the history list so recovery from an
-    // unintended reset never requires filesystem scanning.
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "session-A" });
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "session-B" });
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "session-C" });
-
-    const binding = getCliSessionBinding(entry, "claude-cli");
-    expect(binding?.sessionId).toBe("session-C");
-    expect(binding?.previousSessionIds).toEqual(["session-B", "session-A"]);
-  });
-
-  it("does not record a history entry when the sessionId is unchanged", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "session-A" });
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "session-A" });
-    expect(getCliSessionBinding(entry, "claude-cli")?.previousSessionIds).toBeUndefined();
-  });
-
-  it("caps history at 10 entries", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    for (let i = 0; i < 15; i += 1) {
-      setCliSessionBinding(entry, "claude-cli", { sessionId: `session-${i}` });
-    }
-    const binding = getCliSessionBinding(entry, "claude-cli");
-    expect(binding?.sessionId).toBe("session-14");
-    expect(binding?.previousSessionIds?.length).toBe(10);
-    expect(binding?.previousSessionIds?.[0]).toBe("session-13");
-    expect(binding?.previousSessionIds?.[9]).toBe("session-4");
-  });
-
-  it("merges explicit incoming previousSessionIds with stored history", () => {
-    // Recovery tooling can pre-populate the history list when rewriting a
-    // binding (e.g. to restore a lost conversation by pointing at an older
-    // sessionId while preserving the post-amnesia fresh one for reference).
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "fresh-session" });
-    setCliSessionBinding(entry, "claude-cli", {
-      sessionId: "recovered-session",
-      previousSessionIds: ["fresh-session"],
+    expect(getCliSessionBinding(entry, "claude-cli")).toEqual({
+      sessionId: "cli-session-1",
+      forceReuse: true,
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-hash",
+      mcpConfigHash: "mcp-hash",
+      mcpResumeHash: "mcp-resume-hash",
     });
-    const binding = getCliSessionBinding(entry, "claude-cli");
-    expect(binding?.sessionId).toBe("recovered-session");
-    expect(binding?.previousSessionIds).toEqual(["fresh-session"]);
   });
 
-  it("deduplicates history entries across overlap with stored history", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "a" });
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "b" });
-    setCliSessionBinding(entry, "claude-cli", { sessionId: "a" });
-    const binding = getCliSessionBinding(entry, "claude-cli");
-    // History becomes ["b"] — "a" is the live session again (not in history);
-    // "b" was the displaced value and comes from the stored history exactly once.
-    expect(binding?.previousSessionIds).toEqual(["b"]);
-  });
-});
+  it("force-reuses explicitly attached CLI sessions despite metadata drift", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      forceReuse: true,
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-config-a",
+      mcpResumeHash: "mcp-resume-a",
+    };
 
-describe("resolveCliSessionReuse", () => {
-  it("returns undefined when no binding is provided", () => {
-    expect(resolveCliSessionReuse({ binding: undefined })).toEqual({});
-  });
-
-  it("returns undefined when the binding has no sessionId", () => {
-    expect(resolveCliSessionReuse({ binding: { sessionId: "" } })).toEqual({});
-  });
-
-  it("always returns the stored sessionId when one is present", () => {
-    // Contract: session identity is owned by the sessionId. `claude --resume`
-    // will load the conversation regardless of current environment; if the
-    // resume genuinely fails, the runner will fall back naturally. The
-    // previous gate-based invalidation silently wiped agent memory whenever
-    // any background state (OAuth tokens, MCP port) rotated, and is gone.
     expect(
       resolveCliSessionReuse({
-        binding: { sessionId: "cli-session-1", authProfileId: "anthropic:work" },
+        binding,
+        authProfileId: "anthropic:personal",
+        authEpoch: "auth-epoch-b",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-b",
+        mcpConfigHash: "mcp-config-b",
+        mcpResumeHash: "mcp-resume-b",
       }),
     ).toEqual({ sessionId: "cli-session-1" });
   });
-});
 
-describe("clear helpers", () => {
+  it("keeps legacy bindings reusable until richer metadata is persisted", () => {
+    const entry: SessionEntry = {
+      sessionId: "openclaw-session",
+      updatedAt: Date.now(),
+      cliSessionIds: { "claude-cli": "legacy-session" },
+      claudeCliSessionId: "legacy-session",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding: getCliSessionBinding(entry, "claude-cli"),
+        authEpochVersion: 2,
+      }),
+    ).toEqual({ sessionId: "legacy-session" });
+  });
+
+  it("invalidates legacy bindings when auth, prompt, or MCP state changes", () => {
+    const entry: SessionEntry = {
+      sessionId: "openclaw-session",
+      updatedAt: Date.now(),
+      cliSessionIds: { "claude-cli": "legacy-session" },
+      claudeCliSessionId: "legacy-session",
+    };
+    const binding = getCliSessionBinding(entry, "claude-cli");
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authEpochVersion: 2,
+        authProfileId: "anthropic:work",
+      }),
+    ).toEqual({ invalidatedReason: "auth-profile" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-hash",
+      }),
+    ).toEqual({ invalidatedReason: "system-prompt" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authEpochVersion: 2,
+        mcpConfigHash: "mcp-hash",
+      }),
+    ).toEqual({ invalidatedReason: "mcp" });
+  });
+
+  it("invalidates reuse when stored auth profile or prompt shape changes", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:personal",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ invalidatedReason: "auth-profile" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-b",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ invalidatedReason: "auth-epoch" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-b",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ invalidatedReason: "system-prompt" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-b",
+      }),
+    ).toEqual({ invalidatedReason: "mcp" });
+  });
+
+  it("accepts unversioned auth epochs for binding upgrades", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "previous-auth-epoch",
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
+  });
+
+  it("accepts older auth epoch versions for binding upgrades", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "refresh-token-auth-epoch",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "identity-auth-epoch",
+        authEpochVersion: 3,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
+  });
+
+  it("accepts v3 bindings without authEpoch as binding upgrades to v4", () => {
+    // Pre-v4 google-gemini-cli sessions persisted with authEpochVersion: 3
+    // and no authEpoch (the local credential fingerprint returned undefined
+    // before id_token identity lifting). The version-gate must skip the
+    // epoch comparison for these so the next request after upgrade reuses
+    // the stored session instead of forcing a one-time invalidation.
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: undefined,
+      // authEpoch deliberately absent
+      authEpochVersion: 3,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: undefined,
+        authEpoch: "v4-identity-hash",
+        authEpochVersion: 4,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
+  });
+
+  it("does not treat model changes as a session mismatch", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
+  });
+
+  it("prefers the stable MCP resume hash over the raw MCP config hash", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-config-a",
+      mcpResumeHash: "mcp-resume-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-config-b",
+        mcpResumeHash: "mcp-resume-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-config-a",
+        mcpResumeHash: "mcp-resume-b",
+      }),
+    ).toEqual({ invalidatedReason: "mcp" });
+  });
+
+  it("falls back to legacy MCP config hashes when stored resume hashes are absent", () => {
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-config-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-config-a",
+        mcpResumeHash: "mcp-resume-a",
+      }),
+    ).toEqual({ sessionId: "cli-session-1" });
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work",
+        authEpoch: "auth-epoch-a",
+        authEpochVersion: 2,
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-config-b",
+        mcpResumeHash: "mcp-resume-a",
+      }),
+    ).toEqual({ invalidatedReason: "mcp" });
+  });
+
   it("clears provider-scoped and global CLI session state", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
+    const entry: SessionEntry = {
+      sessionId: "openclaw-session",
+      updatedAt: Date.now(),
+    };
     setCliSessionBinding(entry, "claude-cli", { sessionId: "claude-session" });
     setCliSessionBinding(entry, "codex-cli", { sessionId: "codex-session" });
 
@@ -213,12 +344,9 @@ describe("clear helpers", () => {
     expect(entry.cliSessionIds).toBeUndefined();
     expect(entry.claudeCliSessionId).toBeUndefined();
   });
-});
 
-describe("setCliSessionId / getCliSessionId shortcuts", () => {
-  it("round-trips through the binding", () => {
-    const entry: SessionEntry = { sessionId: "openclaw-session", updatedAt: Date.now() };
-    setCliSessionId(entry, "claude-cli", "cli-session-1");
-    expect(getCliSessionId(entry, "claude-cli")).toBe("cli-session-1");
+  it("hashes trimmed extra system prompts consistently", () => {
+    expect(hashCliSessionText("  keep this  ")).toBe(hashCliSessionText("keep this"));
+    expect(hashCliSessionText("")).toBeUndefined();
   });
 });

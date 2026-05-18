@@ -1,32 +1,16 @@
+import crypto from "node:crypto";
 import type { CliSessionBinding, SessionEntry } from "../config/sessions.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { normalizeProviderId } from "./model-selection.js";
 
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 
-/**
- * Maximum number of historical session IDs retained in
- * `CliSessionBinding.previousSessionIds`. Ring-buffer cap — old entries past
- * this limit are dropped off the tail. Ten is enough to recover from a bad
- * rotation cycle without growing the store indefinitely.
- */
-const PREVIOUS_SESSION_ID_HISTORY_LIMIT = 10;
-
-function normalizePreviousSessionIds(raw: unknown): string[] | undefined {
-  if (!Array.isArray(raw)) {
+export function hashCliSessionText(value: string | undefined): string | undefined {
+  const trimmed = normalizeOptionalString(value);
+  if (!trimmed) {
     return undefined;
   }
-  const out: string[] = [];
-  for (const entry of raw) {
-    const normalized = normalizeOptionalString(entry);
-    if (normalized && !out.includes(normalized)) {
-      out.push(normalized);
-    }
-    if (out.length >= PREVIOUS_SESSION_ID_HISTORY_LIMIT) {
-      break;
-    }
-  }
-  return out.length > 0 ? out : undefined;
+  return crypto.createHash("sha256").update(trimmed).digest("hex");
 }
 
 export function getCliSessionBinding(
@@ -40,18 +24,16 @@ export function getCliSessionBinding(
   const fromBindings = entry.cliSessionBindings?.[normalized];
   const bindingSessionId = normalizeOptionalString(fromBindings?.sessionId);
   if (bindingSessionId) {
-    const binding: CliSessionBinding = { sessionId: bindingSessionId };
-    const authProfileId = normalizeOptionalString(fromBindings?.authProfileId);
-    if (authProfileId) {
-      binding.authProfileId = authProfileId;
-    }
-    const history = normalizePreviousSessionIds(
-      (fromBindings as { previousSessionIds?: unknown })?.previousSessionIds,
-    );
-    if (history) {
-      binding.previousSessionIds = history;
-    }
-    return binding;
+    return {
+      sessionId: bindingSessionId,
+      ...(fromBindings?.forceReuse === true ? { forceReuse: true } : {}),
+      authProfileId: normalizeOptionalString(fromBindings?.authProfileId),
+      authEpoch: normalizeOptionalString(fromBindings?.authEpoch),
+      authEpochVersion: fromBindings?.authEpochVersion,
+      extraSystemPromptHash: normalizeOptionalString(fromBindings?.extraSystemPromptHash),
+      mcpConfigHash: normalizeOptionalString(fromBindings?.mcpConfigHash),
+      mcpResumeHash: normalizeOptionalString(fromBindings?.mcpResumeHash),
+    };
   }
   const fromMap = entry.cliSessionIds?.[normalized];
   const normalizedFromMap = normalizeOptionalString(fromMap);
@@ -88,46 +70,29 @@ export function setCliSessionBinding(
   if (!trimmed) {
     return;
   }
-
-  // Preserve the previously-bound session ID in the history list whenever a
-  // new session ID replaces a non-matching one. The live session is always
-  // the head (`sessionId`); the tail is informational-only memory so we can
-  // always recover from an unintended reset without scanning the filesystem.
-  const existing = entry.cliSessionBindings?.[normalized];
-  const existingSessionId = normalizeOptionalString(existing?.sessionId);
-  const incomingHistory =
-    normalizePreviousSessionIds((binding as { previousSessionIds?: unknown }).previousSessionIds) ??
-    [];
-  const storedHistory =
-    normalizePreviousSessionIds(
-      (existing as { previousSessionIds?: unknown } | undefined)?.previousSessionIds,
-    ) ?? [];
-  const mergedHistory: string[] = [];
-  const pushUnique = (value: string | undefined) => {
-    if (!value || value === trimmed || mergedHistory.includes(value)) {
-      return;
-    }
-    mergedHistory.push(value);
-  };
-  for (const id of incomingHistory) {
-    pushUnique(id);
-  }
-  if (existingSessionId && existingSessionId !== trimmed) {
-    pushUnique(existingSessionId);
-  }
-  for (const id of storedHistory) {
-    pushUnique(id);
-  }
-  const history = mergedHistory.slice(0, PREVIOUS_SESSION_ID_HISTORY_LIMIT);
-
   entry.cliSessionBindings = {
     ...entry.cliSessionBindings,
     [normalized]: {
       sessionId: trimmed,
+      ...(binding.forceReuse === true ? { forceReuse: true } : {}),
       ...(normalizeOptionalString(binding.authProfileId)
         ? { authProfileId: normalizeOptionalString(binding.authProfileId) }
         : {}),
-      ...(history.length > 0 ? { previousSessionIds: history } : {}),
+      ...(normalizeOptionalString(binding.authEpoch)
+        ? { authEpoch: normalizeOptionalString(binding.authEpoch) }
+        : {}),
+      ...(typeof binding.authEpochVersion === "number" && Number.isFinite(binding.authEpochVersion)
+        ? { authEpochVersion: binding.authEpochVersion }
+        : {}),
+      ...(normalizeOptionalString(binding.extraSystemPromptHash)
+        ? { extraSystemPromptHash: normalizeOptionalString(binding.extraSystemPromptHash) }
+        : {}),
+      ...(normalizeOptionalString(binding.mcpConfigHash)
+        ? { mcpConfigHash: normalizeOptionalString(binding.mcpConfigHash) }
+        : {}),
+      ...(normalizeOptionalString(binding.mcpResumeHash)
+        ? { mcpResumeHash: normalizeOptionalString(binding.mcpResumeHash) }
+        : {}),
     },
   };
   entry.cliSessionIds = { ...entry.cliSessionIds, [normalized]: trimmed };
@@ -149,40 +114,66 @@ export function clearCliSession(entry: SessionEntry, provider: string): void {
     entry.cliSessionIds = Object.keys(next).length > 0 ? next : undefined;
   }
   if (normalized === CLAUDE_CLI_BACKEND_ID) {
-    delete entry.claudeCliSessionId;
+    entry.claudeCliSessionId = undefined;
   }
 }
 
 export function clearAllCliSessions(entry: SessionEntry): void {
-  delete entry.cliSessionBindings;
-  delete entry.cliSessionIds;
-  delete entry.claudeCliSessionId;
+  entry.cliSessionBindings = undefined;
+  entry.cliSessionIds = undefined;
+  entry.claudeCliSessionId = undefined;
 }
 
-/**
- * Resolve whether a stored CLI session binding should be reused on the next
- * turn. Contract: **always reuse a stored session ID when one exists.**
- *
- * Previous versions of this function gated reuse on a series of hash
- * comparisons (auth-epoch, extra-system-prompt, mcp-config). Those gates were
- * intended to detect "the environment changed, the resumed session might
- * surprise the model," but in practice they conflated identity (stable) with
- * ephemeral runtime state (rotating OAuth access tokens, ephemeral loopback
- * ports) and silently wiped agent conversation memory on every background
- * rotation. The corruption was compounded by the write path blindly
- * overwriting the stored session ID with the freshly-created one, making the
- * previous session unrecoverable from the store.
- *
- * The session ID itself is the source of truth. `claude --resume <uuid>`
- * loads the full past conversation regardless of current tool surface or
- * credential rotation — and if the resumed session is genuinely unusable
- * (auth revoked, session corrupted), Claude CLI will error out and the
- * runner will fall back to a fresh session naturally. Fail-open beats
- * fail-closed for session continuity.
- */
-export function resolveCliSessionReuse(params: { binding?: CliSessionBinding }): {
+export function resolveCliSessionReuse(params: {
+  binding?: CliSessionBinding;
+  authProfileId?: string;
+  authEpoch?: string;
+  authEpochVersion: number;
+  extraSystemPromptHash?: string;
+  mcpConfigHash?: string;
+  mcpResumeHash?: string;
+}): {
   sessionId?: string;
+  invalidatedReason?: "auth-profile" | "auth-epoch" | "system-prompt" | "mcp";
 } {
-  const sessionId = normalizeOptionalString(params.binding?.sessionId);
-  return sessionId ? { sessionId } : {};
+  const binding = params.binding;
+  const sessionId = normalizeOptionalString(binding?.sessionId);
+  if (!sessionId) {
+    return {};
+  }
+  if (binding?.forceReuse === true) {
+    return { sessionId };
+  }
+  const currentAuthProfileId = normalizeOptionalString(params.authProfileId);
+  const currentAuthEpoch = normalizeOptionalString(params.authEpoch);
+  const currentExtraSystemPromptHash = normalizeOptionalString(params.extraSystemPromptHash);
+  const currentMcpConfigHash = normalizeOptionalString(params.mcpConfigHash);
+  const currentMcpResumeHash = normalizeOptionalString(params.mcpResumeHash);
+  const storedAuthProfileId = normalizeOptionalString(binding?.authProfileId);
+  if (storedAuthProfileId !== currentAuthProfileId) {
+    return { invalidatedReason: "auth-profile" };
+  }
+  const storedAuthEpoch = normalizeOptionalString(binding?.authEpoch);
+  if (
+    binding?.authEpochVersion === params.authEpochVersion &&
+    storedAuthEpoch !== currentAuthEpoch
+  ) {
+    return { invalidatedReason: "auth-epoch" };
+  }
+  const storedExtraSystemPromptHash = normalizeOptionalString(binding?.extraSystemPromptHash);
+  if (storedExtraSystemPromptHash !== currentExtraSystemPromptHash) {
+    return { invalidatedReason: "system-prompt" };
+  }
+  const storedMcpResumeHash = normalizeOptionalString(binding?.mcpResumeHash);
+  if (storedMcpResumeHash && currentMcpResumeHash) {
+    if (storedMcpResumeHash !== currentMcpResumeHash) {
+      return { invalidatedReason: "mcp" };
+    }
+    return { sessionId };
+  }
+  const storedMcpConfigHash = normalizeOptionalString(binding?.mcpConfigHash);
+  if (storedMcpConfigHash !== currentMcpConfigHash) {
+    return { invalidatedReason: "mcp" };
+  }
+  return { sessionId };
 }
