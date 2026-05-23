@@ -13,6 +13,7 @@ import type {
 import type { ErrorObject, ValidateFunction } from "ajv";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { logWarn } from "../logger.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { redactSensitiveUrlLikeString } from "../shared/net/redact-sensitive-url.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
@@ -146,6 +147,7 @@ function createCatalogFingerprint(servers: Record<string, unknown>): string {
 function loadSessionMcpConfig(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
+  sessionKey?: string;
   logDiagnostics?: boolean;
 }): {
   loaded: LoadedMcpConfig;
@@ -154,6 +156,7 @@ function loadSessionMcpConfig(params: {
   const loaded = loadEmbeddedPiMcpConfig({
     workspaceDir: params.workspaceDir,
     cfg: params.cfg,
+    agentId: params.sessionKey ? resolveAgentIdFromSessionKey(params.sessionKey) : undefined,
   });
   if (params.logDiagnostics !== false) {
     for (const diagnostic of loaded.diagnostics) {
@@ -187,6 +190,7 @@ export function createSessionMcpRuntime(params: {
   const { loaded, fingerprint: configFingerprint } = loadSessionMcpConfig({
     workspaceDir: params.workspaceDir,
     cfg: params.cfg,
+    sessionKey: params.sessionKey,
     logDiagnostics: true,
   });
   const createdAt = Date.now();

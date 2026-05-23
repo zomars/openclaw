@@ -10,10 +10,12 @@ type EmbeddedPiMcpConfig = {
 export function loadEmbeddedPiMcpConfig(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
+  agentId?: string;
 }): EmbeddedPiMcpConfig {
   const bundleMcp = loadMergedBundleMcpConfig({
     workspaceDir: params.workspaceDir,
     cfg: params.cfg,
+    agentId: params.agentId,
   });
 
   return {

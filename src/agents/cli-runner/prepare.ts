@@ -211,6 +211,7 @@ export async function prepareCliRunContext(
           OPENCLAW_MCP_MESSAGE_CHANNEL: params.messageChannel ?? params.messageProvider ?? "",
         }
       : undefined,
+    agentId: sessionAgentId,
     warn: (message) => cliBackendLog.warn(message),
   });
   const preparedExecution = await backendResolved.prepareExecution?.({

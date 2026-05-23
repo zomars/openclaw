@@ -148,6 +148,7 @@ export async function prepareCliBundleMcpConfig(params: {
   config?: OpenClawConfig;
   additionalConfig?: BundleMcpConfig;
   env?: Record<string, string>;
+  agentId?: string;
   warn?: (message: string) => void;
 }): Promise<PreparedCliBundleMcpConfig> {
   if (!params.enabled) {
@@ -176,6 +177,7 @@ export async function prepareCliBundleMcpConfig(params: {
     workspaceDir: params.workspaceDir,
     cfg: params.config,
     mapConfiguredServer: toCliBundleMcpServerConfig,
+    agentId: params.agentId,
   });
   for (const diagnostic of bundleConfig.diagnostics) {
     params.warn?.(`bundle MCP skipped for ${diagnostic.pluginId}: ${diagnostic.message}`);

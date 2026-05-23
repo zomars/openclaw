@@ -43,16 +43,51 @@ export function toCliBundleMcpServerConfig(server: BundleMcpServerConfig): Bundl
   return next as BundleMcpServerConfig;
 }
 
+function normalizeAgentList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const resolved = value
+    .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
+    .filter(Boolean);
+  return resolved.length > 0 ? Array.from(new Set(resolved)) : undefined;
+}
+
+function isServerVisibleForAgent(server: Record<string, unknown>, agentId?: string): boolean {
+  const normalizedAgentId = agentId?.trim().toLowerCase();
+  const allowAgents = normalizeAgentList(server.allowAgents);
+  const denyAgents = normalizeAgentList(server.denyAgents);
+  if (allowAgents && (!normalizedAgentId || !allowAgents.includes(normalizedAgentId))) {
+    return false;
+  }
+  if (denyAgents && normalizedAgentId && denyAgents.includes(normalizedAgentId)) {
+    return false;
+  }
+  return true;
+}
+
+function stripAgentVisibilityFields(server: BundleMcpServerConfig): BundleMcpServerConfig {
+  const next = { ...server } as Record<string, unknown>;
+  delete next.allowAgents;
+  delete next.denyAgents;
+  return next as BundleMcpServerConfig;
+}
+
 export function loadMergedBundleMcpConfig(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
   mapConfiguredServer?: BundleMcpServerMapper;
+  agentId?: string;
 }): MergedBundleMcpConfig {
   const bundleMcp = loadEnabledBundleMcpConfig({
     workspaceDir: params.workspaceDir,
     cfg: params.cfg,
   });
-  const configuredMcp = normalizeConfiguredMcpServers(params.cfg?.mcp?.servers);
+  const configuredMcp = Object.fromEntries(
+    Object.entries(normalizeConfiguredMcpServers(params.cfg?.mcp?.servers))
+      .filter(([, server]) => isServerVisibleForAgent(server, params.agentId))
+      .map(([name, server]) => [name, stripAgentVisibilityFields(server as BundleMcpServerConfig)]),
+  );
   const mapConfiguredServer = params.mapConfiguredServer ?? ((server) => server);
 
   return {

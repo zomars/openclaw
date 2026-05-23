@@ -385,6 +385,7 @@ Notes:
 - `show` without a name prints the full configured MCP server object.
 - `set` expects one JSON object value on the command line.
 - Use `transport: "streamable-http"` for Streamable HTTP MCP servers. `openclaw mcp set` also normalizes CLI-native `type: "http"` to the same canonical config shape for compatibility.
+- Add `allowAgents: ["agent-id"]` to expose a configured MCP server only to specific OpenClaw agents. Add `denyAgents: ["agent-id"]` to hide it from specific agents. These visibility fields are consumed by OpenClaw and are not passed through to downstream MCP clients.
 - `unset` fails if the named server does not exist.
 
 Examples:
@@ -405,7 +406,8 @@ Example config shape:
     "servers": {
       "context7": {
         "command": "uvx",
-        "args": ["context7-mcp"]
+        "args": ["context7-mcp"],
+        "allowAgents": ["default"]
       },
       "docs": {
         "url": "https://mcp.example.com",

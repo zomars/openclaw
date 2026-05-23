@@ -46,6 +46,55 @@ describe("loadMergedBundleMcpConfig", () => {
     });
   });
 
+  it("filters configured MCP servers by allowAgents", () => {
+    const merged = loadMergedBundleMcpConfig({
+      workspaceDir: "/workspace",
+      agentId: "default",
+      cfg: {
+        mcp: {
+          servers: {
+            flightconnections: {
+              command: "node",
+              args: ["./server.mjs"],
+              allowAgents: ["default"],
+            },
+            other: {
+              command: "node",
+              args: ["./other.mjs"],
+              allowAgents: ["hank"],
+            },
+          },
+        },
+      },
+    });
+
+    expect(merged.config.mcpServers.flightconnections).toEqual({
+      command: "node",
+      args: ["./server.mjs"],
+    });
+    expect(merged.config.mcpServers.other).toBeUndefined();
+  });
+
+  it("filters configured MCP servers by denyAgents", () => {
+    const merged = loadMergedBundleMcpConfig({
+      workspaceDir: "/workspace",
+      agentId: "hank",
+      cfg: {
+        mcp: {
+          servers: {
+            flightconnections: {
+              command: "node",
+              args: ["./server.mjs"],
+              denyAgents: ["hank"],
+            },
+          },
+        },
+      },
+    });
+
+    expect(merged.config.mcpServers.flightconnections).toBeUndefined();
+  });
+
   it("maps OpenClaw transports to downstream CLI types when requested", () => {
     expect(
       toCliBundleMcpServerConfig({
