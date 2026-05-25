@@ -31,10 +31,8 @@ interface SessionContext {
   sessionKey?: string;
 }
 
-const ATTRIBUTED_TOOLS: Record<string, "coworkerPhone" | "customerPhone" | "phone"> = {
-  process_cfe_receipt: "coworkerPhone",
-  process_cfe_receipt_customer: "customerPhone",
-  edit_quote: "coworkerPhone",
+const ATTRIBUTED_TOOLS: Record<string, "customerPhone" | "phone"> = {
+  process_lead_cfe_receipt: "customerPhone",
   save_lead: "phone",
 };
 

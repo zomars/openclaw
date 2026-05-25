@@ -14,9 +14,6 @@ import { sendWebChannelMessage } from "../../src/plugins/runtime/runtime-web-cha
 import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import { AdminCommandHandler } from "./src/admin/commands.js";
 import { createParseAndQuoteClient } from "./src/cfe/parse-and-quote-client.js";
-import { CompositeCoworkerDirectory } from "./src/config/coworker-directory.js";
-import { MacOSContactsResolver } from "./src/config/coworker-directory/macos-contacts-resolver.js";
-import { OpenclawJsonWhitelistSource } from "./src/config/coworker-whitelist/openclaw-json-whitelist.js";
 import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
 import { SqliteDatabase } from "./src/database/connection.js";
@@ -41,15 +38,12 @@ import { RateLimiter } from "./src/rate-limit/limiter.js";
 import type { Runtime } from "./src/runtime.js";
 import { FileSessionResetter } from "./src/session-resetter/file-resetter.js";
 import { blockLeadTool } from "./src/tools/block-lead.js";
-import { editQuoteTool } from "./src/tools/edit-quote.js";
 import { getFollowupCandidatesTool } from "./src/tools/get-followup-candidates.js";
 import { getLeadTool } from "./src/tools/get-lead.js";
 import { handoffLeadTool } from "./src/tools/handoff-lead.js";
 import { addChatLabelTool, createLabelTool, getLabelsTool } from "./src/tools/label-ops.js";
-import { listCoworkersTool } from "./src/tools/list-coworkers.js";
 import { listLeadsTool } from "./src/tools/list-leads.js";
-import { processCFEReceiptCustomerTool } from "./src/tools/process-cfe-receipt-customer.js";
-import { processCFEReceiptTool } from "./src/tools/process-cfe-receipt.js";
+import { processLeadCFEReceiptTool } from "./src/tools/process-lead-cfe-receipt.js";
 import { saveLeadTool } from "./src/tools/save-lead.js";
 import { saveReceiptDataTool } from "./src/tools/save-receipt-data.js";
 import { sendDisqualificationTool } from "./src/tools/send-disqualification.js";
@@ -57,7 +51,6 @@ import { sendHandoffToAleTool } from "./src/tools/send-handoff-to-ale.js";
 import { sendReceiptRequestTool } from "./src/tools/send-receipt-request.js";
 import { syncLabelsTool } from "./src/tools/sync-labels.js";
 import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
-import { normalizePhone } from "./src/utils/phone.js";
 const plugin = {
   id: "whatsapp-lead-bot",
   name: "WhatsApp Lead Bot",
@@ -232,16 +225,16 @@ const plugin = {
 
     const agentNotifier = new AgentNotifier(runtime, config);
     const handoffManager = new HandoffManager(db, agentNotifier);
-
-    // CFE receipt parsing & quoting — single consolidated endpoint.
-    const cfeApiKey = process.env.SUPABASE_API_KEY;
-    if (!cfeApiKey) {
-      console.warn(
-        "[whatsapp-lead-bot] No SUPABASE_API_KEY — process_cfe_receipt(_customer) and edit_quote disabled",
-      );
-    }
     const mediaHandler = new MediaHandler();
     const handoffInterceptor = new HandoffInterceptor({ agentNotifier });
+
+    // CFE receipt parsing & quoting — only the bot-initiated customer flow
+    // ships here. The generic process_cfe_receipt / edit_quote tools live in
+    // the siloed solayre-quotes-{coworker,leads} plugins.
+    const cfeApiKey = process.env.SUPABASE_API_KEY;
+    if (!cfeApiKey) {
+      console.warn("[whatsapp-lead-bot] No SUPABASE_API_KEY — process_lead_cfe_receipt disabled");
+    }
 
     // Wire 3-layer rate limiting
     const globalLimiter = new GlobalRateLimiter(db, config.rateLimit.global);
@@ -261,35 +254,6 @@ const plugin = {
     const openclawStateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
     const agentId = config.agentId || config.whatsappAccounts[0] || "main";
 
-    // Coworker whitelist — single source of truth is openclaw.json bindings.
-    // When `coworkerAgentId` is configured, load direct peers bound to that
-    // agent so the plugin can treat them as coworkers (bypass lead pipeline,
-    // skip lead persistence) instead of duplicating the list in plugin config.
-    const openclawConfigPath =
-      config.openclawConfigPath ||
-      process.env.OPENCLAW_CONFIG_PATH ||
-      path.join(openclawStateDir, "openclaw.json");
-    const coworkerWhitelist = config.coworkerAgentId
-      ? new OpenclawJsonWhitelistSource({
-          configPath: openclawConfigPath,
-          agentId: config.coworkerAgentId,
-          channel: "whatsapp",
-        })
-      : undefined;
-    if (coworkerWhitelist) {
-      console.log(
-        `[whatsapp-lead-bot] Coworker whitelist source: ${openclawConfigPath} (agentId=${config.coworkerAgentId})`,
-      );
-    }
-
-    // Coworker directory — pairs the whitelist with display names from macOS
-    // Contacts. Falls back gracefully (phones only) if Contacts isn't reachable.
-    const coworkerDirectory = coworkerWhitelist
-      ? new CompositeCoworkerDirectory({
-          whitelist: coworkerWhitelist,
-          resolver: new MacOSContactsResolver(),
-        })
-      : undefined;
     const sessionResetter = new FileSessionResetter(
       openclawStateDir,
       agentId,
@@ -327,7 +291,6 @@ const plugin = {
         agentNotifier,
         handoffManager,
         handoffInterceptor,
-        coworkerWhitelist,
       }),
     );
 
@@ -436,7 +399,7 @@ const plugin = {
       console.log(`[whatsapp-lead-bot] Registered tool: ${tool.name}`);
     }
 
-    // Register process_cfe_receipt(_customer) — single consolidated parse-and-quote endpoint.
+    // Register process_lead_cfe_receipt — bot-initiated lead receipt flow.
     if (cfeApiKey) {
       const cfeOutputDir = path.join(stateDir ?? os.homedir(), "whatsapp-lead-bot", "cfe-output");
       try {
@@ -486,21 +449,7 @@ const plugin = {
         return destPath;
       };
 
-      const isCoworker = coworkerWhitelist
-        ? async (phone: string) => (await coworkerWhitelist.load()).has(normalizePhone(phone))
-        : undefined;
-
-      registerPluginTool("Process CFE Receipt", processCFEReceiptTool, {
-        parseAndQuote: (input) => parseAndQuoteClient.quote(input),
-        saveLead: saveLeadDep,
-        saveQuoteId: saveQuoteIdDep,
-        downloadFile: downloadFileDep,
-        runtime,
-        outputDir: cfeOutputDir,
-        isCoworker,
-      });
-
-      registerPluginTool("Process CFE Receipt (Customer)", processCFEReceiptCustomerTool, {
+      registerPluginTool("Process CFE Receipt (Customer)", processLeadCFEReceiptTool, {
         parseAndQuote: (input) => parseAndQuoteClient.quote(input),
         saveLead: saveLeadDep,
         saveQuoteId: saveQuoteIdDep,
@@ -508,27 +457,12 @@ const plugin = {
         runtime,
         outputDir: cfeOutputDir,
       });
-
-      registerPluginTool("Edit Quote", editQuoteTool, {
-        editQuote: (input) => parseAndQuoteClient.editQuote(input),
-        db,
-        runtime,
-        downloadFile: downloadFileDep,
-        outputDir: cfeOutputDir,
-      });
-    } else {
-      console.warn(
-        "[whatsapp-lead-bot] process_cfe_receipt(_customer) and edit_quote disabled (requires SUPABASE_API_KEY)",
-      );
     }
 
     // Register lead management tools
     registerPluginTool("Save Lead", saveLeadTool, { db, labelService, runtime });
     registerPluginTool("Get Lead", getLeadTool, { db });
     registerPluginTool("List Leads", listLeadsTool, { db });
-    if (coworkerDirectory) {
-      registerPluginTool("List Coworkers", listCoworkersTool, { directory: coworkerDirectory });
-    }
     registerPluginTool("Get Followup Candidates", getFollowupCandidatesTool, { db });
     registerPluginTool("Handoff Lead", handoffLeadTool, {
       db,

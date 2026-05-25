@@ -6,28 +6,12 @@ const zodSchema = z.object({
   // WhatsApp account filtering
   whatsappAccounts: z.array(z.string()).default(["default"]),
 
-  // Peers (group JIDs or phones) delegated to other agents — lead-bot
-  // skips them entirely so OpenClaw routes the message via bindings
-  // without any lead-bot interference (no ack, no lead row, no suppression).
-  delegatedPeers: z.array(z.string()).default([]),
-
-  // Agent notification settings (handoff/lead notifications).
-  // This is a subset of coworkers — only these phones receive bot alerts
-  // (handoffs, new lead notifications, rate-limit warnings, etc.).
+  // Agent notification settings (outbound only).
+  // Phones that receive bot alerts (handoffs, new lead notifications,
+  // rate-limit warnings, etc.). Source-of-trust for admin commands moved to
+  // metadata.sentByAccountOwner — agentNumbers is no longer trusted as an
+  // input channel.
   agentNumbers: z.array(z.string()).default([]),
-
-  // Coworker identification — agent id in `openclaw.json` → `bindings[*]`
-  // whose direct peers are treated as coworkers (they bypass the lead
-  // pipeline). When set, the plugin loads phones from those bindings via
-  // OpenclawJsonWhitelistSource; the bindings file is the single source
-  // of truth. When unset, no whitelist is loaded.
-  coworkerAgentId: z.string().optional(),
-
-  // Path to the openclaw.json that holds the bindings used for the coworker
-  // whitelist. Defaults to $OPENCLAW_CONFIG_PATH or
-  // $OPENCLAW_STATE_DIR/openclaw.json or ~/.openclaw/openclaw.json (resolved
-  // at plugin init time).
-  openclawConfigPath: z.string().optional(),
 
   // Phone prefixes for eval/dry-run mode — messages to matching numbers skip WhatsApp delivery
   // while still running through the full plugin pipeline (hooks, lead DB, etc.)

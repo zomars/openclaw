@@ -1,5 +1,5 @@
 /**
- * Tool: process_cfe_receipt_customer
+ * Tool: process_lead_cfe_receipt
  *
  * Customer-facing variant — the lead IS the customer. Single Supabase
  * parse-and-quote endpoint produces the cotización; we deliver one summary
@@ -12,12 +12,12 @@ import type {
 } from "../cfe/parse-and-quote-client.js";
 import type { Runtime } from "../runtime.js";
 
-export interface ProcessCFEReceiptCustomerParams {
+export interface ProcessLeadCFEReceiptParams {
   mediaPath: string;
   customerPhone: string;
 }
 
-export interface ProcessCFEReceiptCustomerDeps {
+export interface ProcessLeadCFEReceiptDeps {
   parseAndQuote: ParseAndQuoteClient["quote"];
   saveLead: (input: { phone: string; name: string; notes?: string }) => Promise<{ leadId: number }>;
   saveQuoteId: (input: { leadId: number; quoteId: string; quoteNumber: string }) => Promise<void>;
@@ -47,7 +47,7 @@ const inputJsonSchema = {
   required: ["mediaPath", "customerPhone"],
 };
 
-export interface ProcessCFEReceiptCustomerResult {
+export interface ProcessLeadCFEReceiptResult {
   success: boolean;
   leadId?: number;
   quoteId?: string;
@@ -55,8 +55,8 @@ export interface ProcessCFEReceiptCustomerResult {
   error?: string;
 }
 
-export const processCFEReceiptCustomerTool = {
-  name: "process_cfe_receipt_customer",
+export const processLeadCFEReceiptTool = {
+  name: "process_lead_cfe_receipt",
   description:
     "Process a CFE receipt (image or PDF) sent by a customer end-to-end via the consolidated " +
     "parse-and-quote endpoint. Saves lead under the customer's phone and delivers the quote PDF " +
@@ -65,20 +65,20 @@ export const processCFEReceiptCustomerTool = {
     "success=false. Use this as the SINGLE tool call when a customer sends a CFE receipt.",
   inputSchema: inputJsonSchema,
   execute: async (
-    params: ProcessCFEReceiptCustomerParams,
-    deps: ProcessCFEReceiptCustomerDeps,
-  ): Promise<ProcessCFEReceiptCustomerResult> => {
+    params: ProcessLeadCFEReceiptParams,
+    deps: ProcessLeadCFEReceiptDeps,
+  ): Promise<ProcessLeadCFEReceiptResult> => {
     const { mediaPath, customerPhone } = params;
     const { runtime } = deps;
 
-    const sendErr = async (text: string): Promise<ProcessCFEReceiptCustomerResult> => {
+    const sendErr = async (text: string): Promise<ProcessLeadCFEReceiptResult> => {
       try {
         await runtime.sendMessage(customerPhone, {
           text,
-          metadata: { openclawInitiated: true, source: "process_cfe_receipt_customer:error" },
+          metadata: { openclawInitiated: true, source: "process_lead_cfe_receipt:error" },
         });
       } catch (err) {
-        console.error("[process_cfe_receipt_customer] sendErr failed:", err);
+        console.error("[process_lead_cfe_receipt] sendErr failed:", err);
       }
       return { success: false, error: text };
     };
@@ -91,10 +91,10 @@ export const processCFEReceiptCustomerTool = {
     try {
       await runtime.sendMessage(customerPhone, {
         text: ACK_PROCESSING,
-        metadata: { openclawInitiated: true, source: "process_cfe_receipt_customer:ack" },
+        metadata: { openclawInitiated: true, source: "process_lead_cfe_receipt:ack" },
       });
     } catch (err) {
-      console.error("[process_cfe_receipt_customer] ack send failed (continuing):", err);
+      console.error("[process_lead_cfe_receipt] ack send failed (continuing):", err);
     }
 
     // 2. Single API call — parse + quote
@@ -102,11 +102,11 @@ export const processCFEReceiptCustomerTool = {
     try {
       result = await deps.parseAndQuote({ mediaPath, phoneNumber: customerPhone });
     } catch (err) {
-      console.error("[process_cfe_receipt_customer] parseAndQuote threw:", err);
+      console.error("[process_lead_cfe_receipt] parseAndQuote threw:", err);
       return await sendErr(ERR_INTERNAL);
     }
     if (!result.success) {
-      console.error("[process_cfe_receipt_customer] parseAndQuote failed:", result.error);
+      console.error("[process_lead_cfe_receipt] parseAndQuote failed:", result.error);
       return await sendErr(ERR_INTERNAL);
     }
 
@@ -123,7 +123,7 @@ export const processCFEReceiptCustomerTool = {
       });
       leadId = saved.leadId;
     } catch (err) {
-      console.error("[process_cfe_receipt_customer] saveLead failed:", err);
+      console.error("[process_lead_cfe_receipt] saveLead failed:", err);
       return await sendErr(ERR_INTERNAL);
     }
 
@@ -135,7 +135,7 @@ export const processCFEReceiptCustomerTool = {
         quoteNumber: result.quoteNumber,
       });
     } catch (err) {
-      console.error("[process_cfe_receipt_customer] saveQuoteId failed (continuing):", err);
+      console.error("[process_lead_cfe_receipt] saveQuoteId failed (continuing):", err);
     }
 
     // 5. Download quote PDF locally
@@ -146,7 +146,7 @@ export const processCFEReceiptCustomerTool = {
         `${deps.outputDir}/cotizacion-${leadId}-${Date.now()}.pdf`,
       );
     } catch (err) {
-      console.error("[process_cfe_receipt_customer] downloadFile failed:", err);
+      console.error("[process_lead_cfe_receipt] downloadFile failed:", err);
       return await sendErr(ERR_INTERNAL);
     }
 
@@ -162,12 +162,12 @@ export const processCFEReceiptCustomerTool = {
         text: summary,
         metadata: {
           openclawInitiated: true,
-          source: "process_cfe_receipt_customer:result",
+          source: "process_lead_cfe_receipt:result",
           filePath: quotePdfPath,
         },
       });
     } catch (err) {
-      console.error("[process_cfe_receipt_customer] final send failed:", err);
+      console.error("[process_lead_cfe_receipt] final send failed:", err);
       return { success: false, error: "send_failed", leadId };
     }
 

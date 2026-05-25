@@ -29,7 +29,7 @@ const PROMPTS: Record<LeadState, string> = {
     "Estado: AWAITING_RECEIPT — solicita el recibo CFE con send_receipt_request si aún no lo has pedido en esta conversación. Si ya lo solicitaste, espera. Cuando llegue una foto o PDF, procésalo según el flujo de SALES.md.",
 
   READY_TO_QUOTE:
-    "Estado: READY_TO_QUOTE — invoca process_cfe_receipt_customer({ mediaPath, customerPhone }) para entregar la cotización oficial (resumen + PDF en un solo mensaje).",
+    "Estado: READY_TO_QUOTE — invoca process_lead_cfe_receipt({ mediaPath, customerPhone }) para entregar la cotización oficial (resumen + PDF en un solo mensaje).",
 
   QUOTED:
     "Estado: QUOTED — la cotización ya fue enviada. Espera la reacción del cliente. Si pide visita o hablar con asesor, llama send_handoff_to_ale. Si un coworker pide ajustar la cotización (paneles, precio total, cobertura, datos del cliente), usa edit_quote({ quoteNumber, coworkerPhone, ... }).",

@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { ParseAndQuoteError, ParseAndQuoteResult } from "../../cfe/parse-and-quote-client.js";
 import {
-  processCFEReceiptCustomerTool,
-  type ProcessCFEReceiptCustomerDeps,
-} from "../../tools/process-cfe-receipt-customer.js";
+  processLeadCFEReceiptTool,
+  type ProcessLeadCFEReceiptDeps,
+} from "../../tools/process-lead-cfe-receipt.js";
 import { createFakeRuntime } from "../helpers/fake-runtime.js";
 
 const CUSTOMER_PHONE = "526671234567";
@@ -39,8 +39,8 @@ interface FakeState {
   downloads: Array<{ url: string; dest: string }>;
 }
 
-function buildDeps(overrides: Partial<ProcessCFEReceiptCustomerDeps> = {}): {
-  deps: ProcessCFEReceiptCustomerDeps;
+function buildDeps(overrides: Partial<ProcessLeadCFEReceiptDeps> = {}): {
+  deps: ProcessLeadCFEReceiptDeps;
   runtime: ReturnType<typeof createFakeRuntime>;
   state: FakeState;
 } {
@@ -52,7 +52,7 @@ function buildDeps(overrides: Partial<ProcessCFEReceiptCustomerDeps> = {}): {
     downloads: [],
   };
 
-  const deps: ProcessCFEReceiptCustomerDeps = {
+  const deps: ProcessLeadCFEReceiptDeps = {
     parseAndQuote: async (input) => {
       state.parseCalls.push(input);
       return SAMPLE_OK;
@@ -76,10 +76,10 @@ function buildDeps(overrides: Partial<ProcessCFEReceiptCustomerDeps> = {}): {
   return { deps, runtime, state };
 }
 
-describe("process_cfe_receipt_customer tool", () => {
+describe("process_lead_cfe_receipt tool", () => {
   it("sends customer-friendly ack first", async () => {
     const { deps, runtime } = buildDeps();
-    await processCFEReceiptCustomerTool.execute(
+    await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
       deps,
     );
@@ -90,7 +90,7 @@ describe("process_cfe_receipt_customer tool", () => {
   it("happy path: parse-and-quote → save lead under customer phone → save quote ref → download → send", async () => {
     const { deps, runtime, state } = buildDeps();
 
-    const result = await processCFEReceiptCustomerTool.execute(
+    const result = await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
       deps,
     );
@@ -124,7 +124,7 @@ describe("process_cfe_receipt_customer tool", () => {
       parseAndQuote: async () => errResp,
     });
 
-    const result = await processCFEReceiptCustomerTool.execute(
+    const result = await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
       deps,
     );
@@ -142,7 +142,7 @@ describe("process_cfe_receipt_customer tool", () => {
       },
     });
 
-    const result = await processCFEReceiptCustomerTool.execute(
+    const result = await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
       deps,
     );
@@ -159,7 +159,7 @@ describe("process_cfe_receipt_customer tool", () => {
       },
     });
 
-    const result = await processCFEReceiptCustomerTool.execute(
+    const result = await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
       deps,
     );
@@ -177,7 +177,7 @@ describe("process_cfe_receipt_customer tool", () => {
       parseAndQuote: async () => noName,
     });
 
-    const result = await processCFEReceiptCustomerTool.execute(
+    const result = await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
       deps,
     );
@@ -198,7 +198,7 @@ describe("process_cfe_receipt_customer tool", () => {
     };
     const { deps, state } = buildDeps({ runtime });
 
-    const result = await processCFEReceiptCustomerTool.execute(
+    const result = await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
       deps,
     );
@@ -211,12 +211,9 @@ describe("process_cfe_receipt_customer tool", () => {
 
   it("rejects empty params", async () => {
     const { deps } = buildDeps();
-    const r1 = await processCFEReceiptCustomerTool.execute(
-      { mediaPath: "", customerPhone: "" },
-      deps,
-    );
+    const r1 = await processLeadCFEReceiptTool.execute({ mediaPath: "", customerPhone: "" }, deps);
     expect(r1.success).toBe(false);
-    const r2 = await processCFEReceiptCustomerTool.execute(
+    const r2 = await processLeadCFEReceiptTool.execute(
       { mediaPath: MEDIA_PATH, customerPhone: "" },
       deps,
     );

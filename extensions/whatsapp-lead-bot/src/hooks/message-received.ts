@@ -4,7 +4,6 @@
  */
 
 import type { AdminCommandHandler } from "../admin/commands.js";
-import type { CoworkerWhitelistSource } from "../config/coworker-whitelist.js";
 import type { WhatsAppLeadBotConfig } from "../config/schema.js";
 import { getContext } from "../context.js";
 import type { Database } from "../database.js";
@@ -33,14 +32,6 @@ export interface MessageReceivedHandlerDeps {
   agentNotifier: AgentNotifier;
   handoffManager: HandoffManager;
   handoffInterceptor: HandoffInterceptor;
-  /**
-   * Source of truth for "is this sender a coworker?". When the loaded set
-   * contains the sender's normalized phone, the message bypasses the lead
-   * pipeline so a coworker who happens to message this number is never
-   * persisted as a lead and never gets the lead-state prompt injected.
-   * When omitted, no senders are treated as coworkers.
-   */
-  coworkerWhitelist?: CoworkerWhitelistSource;
 }
 
 /** Result from a filter step: return a value to short-circuit, or null to continue. */
@@ -86,21 +77,18 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     return null;
   }
 
-  function filterDelegatedPeer({ event }: MessageInput): FilterResult {
-    if (deps.config.delegatedPeers?.includes(event.from)) {
-      console.log(`[lead-bot] Skipping delegated peer "${event.from}" — routed to another agent`);
-      return {};
-    }
-    return null;
-  }
-
   async function filterSelfChat({ event, runtime }: MessageInput): Promise<FilterResult> {
     const { from, content, metadata } = event;
     const to = metadata?.to as string | undefined;
-    const isSelfChat = to && normalizePhone(from) === normalizePhone(to);
+    const sentByAccountOwner = metadata?.sentByAccountOwner === true;
+    const sameNumber = !!to && normalizePhone(from) === normalizePhone(to);
+    // Strict self-chat: message must come from the connected device AND have
+    // matching from/to numbers. Both signals together ensure admin commands
+    // can only originate from the operator messaging the bot's own number.
+    const isSelfChat = sameNumber && sentByAccountOwner;
 
     console.log(
-      `[message-received] Self-chat check: from=${from}, to=${to}, isSelfChat=${isSelfChat}`,
+      `[message-received] Self-chat check: from=${from}, to=${to}, sameNumber=${sameNumber}, sentByAccountOwner=${sentByAccountOwner}, isSelfChat=${isSelfChat}`,
     );
 
     if (!isSelfChat) {
@@ -125,18 +113,6 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     }
     // Not an admin command → let OpenClaw handle
     return {};
-  }
-
-  async function filterTeamMember({ event }: MessageInput): Promise<FilterResult> {
-    if (!deps.coworkerWhitelist) {
-      return null;
-    }
-    const whitelist = await deps.coworkerWhitelist.load();
-    if (whitelist.has(normalizePhone(event.from))) {
-      console.log(`[lead-bot] Coworker detected: ${event.from} — bypassing lead pipeline`);
-      return {};
-    }
-    return null;
   }
 
   async function filterWhatsAppWebHandoff({ event }: MessageInput): Promise<FilterResult> {
@@ -268,7 +244,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     const input: MessageInput = { event, ctx, runtime: getContext().runtime };
 
     // Pre-lead filters
-    const preLeadFilters = [filterChannel, filterAccount, filterOpenClawLoop, filterDelegatedPeer];
+    const preLeadFilters = [filterChannel, filterAccount, filterOpenClawLoop];
     for (const filter of preLeadFilters) {
       const result = filter(input);
       if (result !== null) {
@@ -281,7 +257,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     );
 
     // Async pre-lead filters
-    for (const filter of [filterSelfChat, filterTeamMember, filterWhatsAppWebHandoff] as const) {
+    for (const filter of [filterSelfChat, filterWhatsAppWebHandoff] as const) {
       const result = await filter(input);
       if (result !== null) {
         return result;

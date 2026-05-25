@@ -10,15 +10,12 @@
       "add_chat_label",
       "block_lead",
       "create_label",
-      "edit_quote",
       "get_followup_candidates",
       "get_labels",
       "get_lead",
       "handoff_lead",
-      "list_coworkers",
       "list_leads",
-      "process_cfe_receipt",
-      "process_cfe_receipt_customer",
+      "process_lead_cfe_receipt",
       "save_lead",
       "save_receipt_data",
       "send_disqualification",
@@ -40,23 +37,10 @@
         "items": { "type": "string" },
         "description": "WhatsApp account IDs to handle (e.g. ['default']). Leave empty to handle all accounts."
       },
-      "delegatedPeers": {
-        "type": "array",
-        "items": { "type": "string" },
-        "description": "Peer JIDs or phones delegated to other agents — lead-bot skips them entirely so OpenClaw routes via bindings without lead-bot interference."
-      },
       "agentNumbers": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "Subset of coworkers that receive bot alerts (handoff, new lead, rate-limit). Must be a subset of the coworker whitelist resolved via coworkerAgentId."
-      },
-      "coworkerAgentId": {
-        "type": "string",
-        "description": "Agent id in openclaw.json bindings whose direct peers are treated as coworkers (bypass lead pipeline, skip lead persistence). The bindings are the single source of truth for coworker identification."
-      },
-      "openclawConfigPath": {
-        "type": "string",
-        "description": "Path to openclaw.json for the coworker whitelist. Defaults to $OPENCLAW_CONFIG_PATH or $OPENCLAW_STATE_DIR/openclaw.json or ~/.openclaw/openclaw.json."
+        "description": "Phones that receive bot alerts (handoff, new lead, rate-limit). Outbound notifications only — admin commands gate on metadata.sentByAccountOwner."
       },
       "dryRunPrefixes": {
         "type": "array",

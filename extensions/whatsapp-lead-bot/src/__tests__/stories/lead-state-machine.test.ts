@@ -211,14 +211,14 @@ describe("leadStateInputFromRow — extracts billId from receipt_data JSON", () 
 });
 
 describe("allowed-tools tool gating", () => {
-  it("process_cfe_receipt_customer is allowed once the receipt is in scope", () => {
+  it("process_lead_cfe_receipt is allowed once the receipt is in scope", () => {
     // Consolidated tool: parses the bill AND delivers the quote in one call.
     // Allowed in AWAITING_RECEIPT (when the customer sends the file) and in
     // READY_TO_QUOTE (re-quote without re-asking).
-    expect(isToolAllowedInState("process_cfe_receipt_customer", "AWAITING_RECEIPT")).toBe(true);
-    expect(isToolAllowedInState("process_cfe_receipt_customer", "READY_TO_QUOTE")).toBe(true);
-    expect(isToolAllowedInState("process_cfe_receipt_customer", "AWAITING_NAME")).toBe(false);
-    expect(isToolAllowedInState("process_cfe_receipt_customer", "QUOTED")).toBe(false);
+    expect(isToolAllowedInState("process_lead_cfe_receipt", "AWAITING_RECEIPT")).toBe(true);
+    expect(isToolAllowedInState("process_lead_cfe_receipt", "READY_TO_QUOTE")).toBe(true);
+    expect(isToolAllowedInState("process_lead_cfe_receipt", "AWAITING_NAME")).toBe(false);
+    expect(isToolAllowedInState("process_lead_cfe_receipt", "QUOTED")).toBe(false);
   });
 
   it("edit_quote is only allowed in QUOTED", () => {
@@ -254,8 +254,8 @@ describe("allowed-tools tool gating", () => {
   });
 
   it("DISQUALIFIED and HANDED_OFF allow no state-dependent tools", () => {
-    expect(isToolAllowedInState("process_cfe_receipt_customer", "DISQUALIFIED")).toBe(false);
-    expect(isToolAllowedInState("process_cfe_receipt_customer", "HANDED_OFF")).toBe(false);
+    expect(isToolAllowedInState("process_lead_cfe_receipt", "DISQUALIFIED")).toBe(false);
+    expect(isToolAllowedInState("process_lead_cfe_receipt", "HANDED_OFF")).toBe(false);
     expect(isToolAllowedInState("message", "DISQUALIFIED")).toBe(false);
     expect(isToolAllowedInState("message", "HANDED_OFF")).toBe(false);
   });
@@ -268,7 +268,7 @@ describe("allowed-tools tool gating", () => {
 
   it("allowedToolsForState returns sorted list including always-allowed", () => {
     const allowed = allowedToolsForState("READY_TO_QUOTE");
-    expect(allowed).toContain("process_cfe_receipt_customer");
+    expect(allowed).toContain("process_lead_cfe_receipt");
     expect(allowed).toContain("get_lead");
     expect([...allowed]).toEqual([...allowed].toSorted());
   });
@@ -297,9 +297,9 @@ describe("buildStatePromptContext", () => {
     }
   });
 
-  it("READY_TO_QUOTE prompt directs the LLM to invoke process_cfe_receipt_customer", () => {
+  it("READY_TO_QUOTE prompt directs the LLM to invoke process_lead_cfe_receipt", () => {
     const ctx = buildStatePromptContext("READY_TO_QUOTE");
-    expect(ctx).toContain("process_cfe_receipt_customer");
+    expect(ctx).toContain("process_lead_cfe_receipt");
   });
 
   it("QUOTED prompt directs handoff for visit requests", () => {

@@ -62,7 +62,7 @@ describe("before_prompt_build handler", () => {
     );
 
     expect(result?.prependContext).toContain("READY_TO_QUOTE");
-    expect(result?.prependContext).toContain("process_cfe_receipt_customer");
+    expect(result?.prependContext).toContain("process_lead_cfe_receipt");
   });
 
   it("returns nothing for non-whatsapp channels", async () => {

@@ -166,7 +166,7 @@ describe("System / Operations Stories", () => {
     expect(queue.hasQueued("+222")).toBe(false);
   });
 
-  it("40. filters messages by configured WhatsApp accounts and bypasses pipeline for team members", async () => {
+  it("40. filters messages by configured WhatsApp accounts and channel", async () => {
     // Test the message-received handler's account and team member filters
     const { createMessageReceivedHandler } = await import("../../hooks/message-received.js");
     const { withContext } = await import("../../context.js");
@@ -189,13 +189,6 @@ describe("System / Operations Stories", () => {
       whatsappAccounts: ["acct-1"],
       agentNumbers: ["+15558888888"],
     });
-
-    // Whitelist holds both numbers in canonical form. `+15558888888` is also
-    // in `agentNumbers` so it receives bot notifications, but `filterTeamMember`
-    // only looks at the whitelist — agentNumbers is a strict subset.
-    const coworkerWhitelist = {
-      load: async () => new Set(["15557777777", "15558888888"]),
-    };
 
     const handoffManager = new HandoffManager(db, notifier);
     const rateLimiter = new RateLimiter(db, {
@@ -229,7 +222,6 @@ describe("System / Operations Stories", () => {
       agentNotifier,
       handoffManager,
       handoffInterceptor,
-      coworkerWhitelist,
     });
 
     const getRuntime = () => runtime;
@@ -241,20 +233,6 @@ describe("System / Operations Stories", () => {
       { channelId: "whatsapp", accountId: "acct-WRONG" },
     );
     expect(wrongAcct).toEqual({});
-
-    // Team member → bypasses pipeline (empty result)
-    const teamMsg = await wrappedHandler(
-      { from: "+15557777777", content: "Internal message" },
-      { channelId: "whatsapp", accountId: "acct-1" },
-    );
-    expect(teamMsg).toEqual({});
-
-    // Agent number → also bypasses pipeline
-    const agentMsg = await wrappedHandler(
-      { from: "+15558888888", content: "Agent check" },
-      { channelId: "whatsapp", accountId: "acct-1" },
-    );
-    expect(agentMsg).toEqual({});
 
     // Non-WhatsApp channel → passes through
     const nonWA = await wrappedHandler(

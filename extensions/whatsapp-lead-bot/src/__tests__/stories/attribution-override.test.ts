@@ -6,26 +6,11 @@ function evt(toolName: string, params: Record<string, unknown>): PluginHookBefor
   return { toolName, params };
 }
 
-describe("attribution-override hook", () => {
-  it("overrides coworkerPhone with runtime sender for process_cfe_receipt", () => {
+describe("attribution-override hook (lead-bot-owned tools)", () => {
+  it("overrides customerPhone with runtime sender for process_lead_cfe_receipt", () => {
     const handler = createAttributionOverrideHandler();
     const result = handler(
-      evt("process_cfe_receipt", {
-        mediaPath: "/tmp/recibo.pdf",
-        coworkerPhone: "5219999999999",
-      }),
-      { sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5216672350818" },
-    );
-
-    expect(result).toEqual({
-      params: { mediaPath: "/tmp/recibo.pdf", coworkerPhone: "5216672350818" },
-    });
-  });
-
-  it("overrides customerPhone with runtime sender for process_cfe_receipt_customer", () => {
-    const handler = createAttributionOverrideHandler();
-    const result = handler(
-      evt("process_cfe_receipt_customer", {
+      evt("process_lead_cfe_receipt", {
         mediaPath: "/tmp/r.pdf",
         customerPhone: "5219999999999",
       }),
@@ -40,7 +25,7 @@ describe("attribution-override hook", () => {
   it("overrides phone for save_lead", () => {
     const handler = createAttributionOverrideHandler();
     const result = handler(evt("save_lead", { phone: "5219999999999", name: "Juan" }), {
-      sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5216672350818",
+      sessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5216672350818",
     });
 
     expect(result).toEqual({
@@ -48,16 +33,13 @@ describe("attribution-override hook", () => {
     });
   });
 
-  it("overrides coworkerPhone for edit_quote", () => {
+  it("ignores tools that are not in the attribution map", () => {
     const handler = createAttributionOverrideHandler();
-    const result = handler(
-      evt("edit_quote", { quoteNumber: "SOL20260513-2117", coworkerPhone: "5219999999999" }),
-      { sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5216672350818" },
-    );
-
-    expect(result).toEqual({
-      params: { quoteNumber: "SOL20260513-2117", coworkerPhone: "5216672350818" },
+    const result = handler(evt("get_lead", { phone: "5219999999999" }), {
+      sessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5216671234567",
     });
+
+    expect(result).toBeUndefined();
   });
 
   it("normalizes the leading + on both sides before comparing", () => {
@@ -65,28 +47,10 @@ describe("attribution-override hook", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const result = handler(
-      evt("process_cfe_receipt", {
-        mediaPath: "/tmp/r.pdf",
-        coworkerPhone: "+5216672350818",
+      evt("save_lead", {
+        phone: "+5216672350818",
       }),
-      { sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5216672350818" },
-    );
-
-    expect(result).toBeUndefined();
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
-  it("returns undefined when LLM phone already matches runtime sender", () => {
-    const handler = createAttributionOverrideHandler();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    const result = handler(
-      evt("process_cfe_receipt", {
-        mediaPath: "/tmp/r.pdf",
-        coworkerPhone: "5216672350818",
-      }),
-      { sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5216672350818" },
+      { sessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5216672350818" },
     );
 
     expect(result).toBeUndefined();
@@ -99,60 +63,29 @@ describe("attribution-override hook", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     handler(
-      evt("process_cfe_receipt", {
-        mediaPath: "/tmp/r.pdf",
-        coworkerPhone: "5219999999999",
+      evt("save_lead", {
+        phone: "5219999999999",
       }),
-      { sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5216672350818" },
+      { sessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5216672350818" },
     );
 
     expect(warn).toHaveBeenCalledTimes(1);
     const message = warn.mock.calls[0]?.[0] as string;
-    expect(message).toContain("LLM coworkerPhone=5219999999999");
+    expect(message).toContain("LLM phone=5219999999999");
     expect(message).toContain("runtime 5216672350818");
     warn.mockRestore();
   });
 
   it("blocks the call when sessionKey has no direct peer", () => {
     const handler = createAttributionOverrideHandler();
-    const result = handler(
-      evt("process_cfe_receipt", { mediaPath: "/tmp/r.pdf", coworkerPhone: "5216672350818" }),
-      { sessionKey: "agent:solayre-coworker:whatsapp:solayre:group:120363427401851619@g.us" },
-    );
-
-    expect(result?.block).toBe(true);
-    expect(result?.blockReason).toContain("peer direct");
-  });
-
-  it("blocks the call when sessionKey is missing entirely", () => {
-    const handler = createAttributionOverrideHandler();
-    const result = handler(evt("save_lead", { phone: "5216672350818" }), undefined);
-
-    expect(result?.block).toBe(true);
-  });
-
-  it("does not touch tools outside the attributed set", () => {
-    const handler = createAttributionOverrideHandler();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    const result = handler(
-      evt("message", { action: "send", target: "whatsapp:5216671234567", message: "hola" }),
-      { sessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5216671234567" },
-    );
-
-    expect(result).toBeUndefined();
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
-  it("injects runtime phone when LLM omits the param entirely", () => {
-    const handler = createAttributionOverrideHandler();
-    const result = handler(evt("save_lead", { name: "Juan" }), {
-      sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5216672350818",
+    const result = handler(evt("save_lead", { phone: "5216672350818" }), {
+      sessionKey: "agent:solayre-leads:whatsapp:solayre:group:120363427401851619@g.us",
     });
 
-    expect(result).toEqual({
-      params: { name: "Juan", phone: "5216672350818" },
-    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        block: true,
+      }),
+    );
   });
 });

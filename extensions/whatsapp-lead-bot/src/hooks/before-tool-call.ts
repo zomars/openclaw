@@ -100,7 +100,7 @@ const BLOCK_REASON_TEMPLATE =
   'Tu mensaje fue bloqueado por el guardrail. Detecté: "{match}" (regla: {pattern}). ' +
   "PROHIBIDO escribir precios, financiamiento, números de paneles, kWh o porcentajes en texto libre. " +
   "Usa el tool blindado correspondiente: " +
-  "process_cfe_receipt_customer({ mediaPath, customerPhone }) para entregar la cotización oficial (PDF + resumen), " +
+  "process_lead_cfe_receipt({ mediaPath, customerPhone }) para entregar la cotización oficial (PDF + resumen), " +
   "edit_quote({ quoteNumber, coworkerPhone, ... }) para ajustar una cotización existente, " +
   "send_disqualification(phone, reason) para descalificar OUT. " +
   "Reintenta este turno sin escribir cifras del sistema.";
