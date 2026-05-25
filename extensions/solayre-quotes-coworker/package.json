@@ -1,0 +1,28 @@
+{
+  "name": "@openclaw/solayre-quotes-coworker",
+  "version": "0.1.0",
+  "description": "Stateless CFE-receipt → solar-quote tools scoped to the solayre-coworker agent. Coworker forwards a receipt + clientPhone; plugin generates the quote PDF and delivers it to the client.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "form-data": "^4.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "vitest": "^4.0.18"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./index.ts"
+    ]
+  }
+}

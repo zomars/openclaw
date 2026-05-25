@@ -1,0 +1,31 @@
+{
+  "id": "solayre-quotes-leads",
+  "name": "Solayre Quotes (Leads)",
+  "version": "0.1.0",
+  "description": "Stateless CFE-receipt → solar-quote tools scoped to the solayre-leads agent. The current peer is assumed to be the lead receiving the quote; persistence in the leads DB stays in whatsapp-lead-bot via save_lead / save_receipt_data.",
+  "author": "OpenClaw",
+  "license": "MIT",
+  "contracts": {
+    "tools": ["solayre_quotes_leads__process_cfe_receipt", "solayre_quotes_leads__edit_quote"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "whatsappAccounts": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "parseAndQuoteUrl": {
+        "type": "string"
+      },
+      "editQuoteUrl": {
+        "type": "string"
+      },
+      "mediaDir": {
+        "type": "string"
+      }
+    }
+  }
+}

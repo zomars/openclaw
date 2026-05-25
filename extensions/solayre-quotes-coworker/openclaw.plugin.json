@@ -1,0 +1,35 @@
+{
+  "id": "solayre-quotes-coworker",
+  "name": "Solayre Quotes (Coworker)",
+  "version": "0.1.0",
+  "description": "CFE-receipt → solar-quote tools for the solayre-coworker agent. Stateless: parses a CFE PDF via the Supabase parse-and-quote endpoint and delivers the quote to whatever client phone the coworker supplies.",
+  "author": "OpenClaw",
+  "license": "MIT",
+  "contracts": {
+    "tools": ["solayre_quotes_coworker__process_cfe_receipt", "solayre_quotes_coworker__edit_quote"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "whatsappAccounts": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "WhatsApp account IDs whose runtime is used to send the quote PDF. The plugin uses the first entry as default."
+      },
+      "parseAndQuoteUrl": {
+        "type": "string",
+        "description": "Supabase parse-and-quote endpoint."
+      },
+      "editQuoteUrl": {
+        "type": "string",
+        "description": "Supabase synchronous quote-revision endpoint."
+      },
+      "mediaDir": {
+        "type": "string",
+        "description": "Directory where downloaded quote PDFs are staged before delivery."
+      }
+    }
+  }
+}

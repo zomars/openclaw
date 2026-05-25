@@ -1,0 +1,28 @@
+{
+  "name": "@openclaw/solayre-quotes-leads",
+  "version": "0.1.0",
+  "description": "Stateless CFE-receipt → solar-quote tools scoped to the solayre-leads agent. Operator drives the quote; lead state stays in whatsapp-lead-bot.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "form-data": "^4.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "vitest": "^4.0.18"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./index.ts"
+    ]
+  }
+}
