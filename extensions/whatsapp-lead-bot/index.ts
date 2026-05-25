@@ -108,6 +108,7 @@ const plugin = {
           try {
             await sendWebChannelMessage(to, content.text, {
               verbose: false,
+              cfg: api.runtime.config?.current?.() ?? api.config,
               accountId: accountId,
             });
           } catch (err) {
