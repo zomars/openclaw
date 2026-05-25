@@ -21,6 +21,9 @@ export function createMockPluginRegistry(
         name: "Test Plugin",
         source: "test",
         hookCount: hooks.filter((hook) => (hook.pluginId ?? "test-plugin") === pluginId).length,
+        // Mock plugins opt every agent in by default. Tests that exercise the
+        // per-agent visibility filter should override this with explicit lists.
+        allowAgents: ["*"],
       }),
     ),
     hooks: hooks as never[],

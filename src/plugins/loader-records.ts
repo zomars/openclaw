@@ -28,6 +28,8 @@ export function createPluginRecord(params: {
   providerIds?: readonly string[];
   configSchema: boolean;
   contracts?: PluginManifestContracts;
+  allowAgents?: string[];
+  denyAgents?: string[];
 }): PluginRecord {
   return {
     id: params.id,
@@ -51,6 +53,8 @@ export function createPluginRecord(params: {
     activationReason: params.activationState?.reason,
     syntheticAuthRefs: params.syntheticAuthRefs ?? [],
     status: params.enabled ? "loaded" : "disabled",
+    allowAgents: params.allowAgents,
+    denyAgents: params.denyAgents,
     toolNames: [],
     hookNames: [],
     channelIds: [...(params.channelIds ?? [])],

@@ -9,6 +9,13 @@ export type PluginHookMessageContext = {
   runId?: string;
   messageId?: string;
   senderId?: string;
+  /**
+   * Resolved owning agent for this message, when the channel layer has
+   * already determined routing. Used by the host-side hook dispatcher to
+   * apply `plugins.entries.<id>.allowAgents` / `denyAgents` before invoking
+   * registered handlers.
+   */
+  agentId?: string;
   trace?: DiagnosticTraceContext;
   traceId?: string;
   spanId?: string;

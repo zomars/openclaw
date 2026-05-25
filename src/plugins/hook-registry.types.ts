@@ -18,5 +18,9 @@ export type GlobalHookRunnerRegistry = HookRunnerRegistry & {
   plugins: Array<{
     id: string;
     status: "loaded" | "disabled" | "error";
+    /** From `plugins.entries.<id>.allowAgents`. Used to gate agent-scoped hook dispatch. */
+    allowAgents?: string[];
+    /** From `plugins.entries.<id>.denyAgents`. Subtractive on top of allowAgents. */
+    denyAgents?: string[];
   }>;
 };

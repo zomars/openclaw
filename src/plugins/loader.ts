@@ -1787,6 +1787,8 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
         providerIds: manifestRecord.providers,
         configSchema: Boolean(manifestRecord.configSchema),
         contracts: manifestRecord.contracts,
+        allowAgents: entry?.allowAgents,
+        denyAgents: entry?.denyAgents,
       });
       record.kind = manifestRecord.kind;
       record.configUiHints = manifestRecord.configUiHints;
@@ -2613,6 +2615,8 @@ export async function loadOpenClawPluginCliRegistry(
       providerIds: manifestRecord.providers,
       configSchema: Boolean(manifestRecord.configSchema),
       contracts: manifestRecord.contracts,
+      allowAgents: entry?.allowAgents,
+      denyAgents: entry?.denyAgents,
     });
     record.kind = manifestRecord.kind;
     record.configUiHints = manifestRecord.configUiHints;

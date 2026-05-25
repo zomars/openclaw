@@ -1220,6 +1220,10 @@ export const FIELD_HELP: Record<string, string> = {
     "Per-plugin settings keyed by plugin ID including enablement and plugin-specific runtime configuration payloads. Use this for scoped plugin tuning without changing global loader policy.",
   "plugins.entries.*.enabled":
     "Per-plugin enablement override for a specific entry, applied on top of global plugin policy (restart required). Use this to stage plugin rollout gradually across environments.",
+  "plugins.entries.*.allowAgents":
+    'Strict opt-in agent allowlist. Only listed agent ids see this plugin\'s hooks; an absent or empty list makes the plugin inert. Use the wildcard "*" to opt every agent in without listing names. Mirrors mcp.servers.<name>.allowAgents but plugins do not fall back to an implicit "all agents" default.',
+  "plugins.entries.*.denyAgents":
+    "Agent ids that should never see this plugin's hooks. Subtractive on top of allowAgents.",
   "plugins.entries.*.hooks":
     "Per-plugin typed hook policy controls for core-enforced safety gates. Use this to constrain high-impact hook categories without disabling the entire plugin.",
   "plugins.entries.*.hooks.allowPromptInjection":

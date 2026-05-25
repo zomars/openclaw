@@ -300,6 +300,36 @@ Non-bundled plugins that need `llm_input`, `llm_output`,
 Prompt-mutating hooks and durable next-turn injections can be disabled per plugin
 with `plugins.entries.<id>.hooks.allowPromptInjection=false`.
 
+### Per-agent hook scoping
+
+Plugins are strict opt-in for hook dispatch. `plugins.entries.<id>.allowAgents`
+lists the agent ids that may see this plugin's hooks; an absent or empty list
+makes the plugin inert for every agent. `denyAgents` subtracts from
+`allowAgents`. Use the wildcard `"*"` to opt every agent in without listing
+them by name.
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "whatsapp-lead-bot": {
+        "allowAgents": ["solayre-leads"]
+      },
+      "memory-core": {
+        "allowAgents": ["*"]
+      }
+    }
+  }
+}
+```
+
+Gateway-wide hooks whose context has no `agentId` field (for example
+`gateway_start`, `gateway_stop`) bypass this filter; the scoping rule only
+applies to agent-aware hook contexts. Mirrors `mcp.servers.<name>.allowAgents`,
+with one difference: plugins do not fall back to an implicit "all agents"
+default. Migrate existing configs with `node scripts/migrate-allow-agents.mjs`
+(see `docs/install/updating.md`).
+
 ### Session extensions and next-turn injections
 
 Workflow plugins can persist small JSON-compatible session state with

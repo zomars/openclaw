@@ -19,6 +19,8 @@ export type NormalizedPluginsConfig = {
     string,
     {
       enabled?: boolean;
+      allowAgents?: string[];
+      denyAgents?: string[];
       hooks?: {
         allowPromptInjection?: boolean;
         allowConversationAccess?: boolean;
@@ -168,12 +170,26 @@ function normalizePluginEntries(
       ...normalized[normalizedKey],
       enabled:
         typeof entry.enabled === "boolean" ? entry.enabled : normalized[normalizedKey]?.enabled,
+      allowAgents:
+        normalizeAgentScopeList(entry.allowAgents) ?? normalized[normalizedKey]?.allowAgents,
+      denyAgents:
+        normalizeAgentScopeList(entry.denyAgents) ?? normalized[normalizedKey]?.denyAgents,
       hooks: normalizedHooks ?? normalized[normalizedKey]?.hooks,
       subagent: normalizedSubagent ?? normalized[normalizedKey]?.subagent,
       config: "config" in entry ? entry.config : normalized[normalizedKey]?.config,
     };
   }
   return normalized;
+}
+
+function normalizeAgentScopeList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((entry): entry is string => entry.length > 0);
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : [];
 }
 
 export function normalizePluginsConfigWithResolver(

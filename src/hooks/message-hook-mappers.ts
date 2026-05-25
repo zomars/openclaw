@@ -36,6 +36,8 @@ export type CanonicalInboundMessageHookContext = {
   conversationId?: string;
   sessionKey?: string;
   runId?: string;
+  /** Owning agent for the resolved route; threaded into the plugin hook context for per-agent scoping. */
+  agentId?: string;
   messageId?: string;
   senderId?: string;
   senderName?: string;
@@ -75,6 +77,8 @@ export type CanonicalSentMessageHookContext = {
   conversationId?: string;
   sessionKey?: string;
   runId?: string;
+  /** Owning agent for the resolved route; threaded into the plugin hook context for per-agent scoping. */
+  agentId?: string;
   messageId?: string;
   trace?: DiagnosticTraceContext;
   callDepth?: number;
@@ -91,6 +95,7 @@ export function deriveInboundMessageHookContext(
   overrides?: {
     content?: string;
     messageId?: string;
+    agentId?: string;
   },
 ): CanonicalInboundMessageHookContext {
   const content =
@@ -134,6 +139,7 @@ export function deriveInboundMessageHookContext(
     accountId: ctx.AccountId,
     conversationId,
     sessionKey: ctx.SessionKey,
+    agentId: overrides?.agentId,
     messageId:
       overrides?.messageId ??
       ctx.MessageSidFull ??
@@ -175,6 +181,7 @@ export function buildCanonicalSentMessageHookContext(params: {
   conversationId?: string;
   sessionKey?: string;
   runId?: string;
+  agentId?: string;
   messageId?: string;
   trace?: DiagnosticTraceContext;
   callDepth?: number;
@@ -191,6 +198,7 @@ export function buildCanonicalSentMessageHookContext(params: {
     conversationId: params.conversationId ?? params.to,
     sessionKey: params.sessionKey,
     runId: params.runId,
+    agentId: params.agentId,
     messageId: params.messageId,
     trace: params.trace,
     callDepth: params.callDepth,
@@ -235,6 +243,9 @@ export function toPluginMessageContext(
   }
   if (canonical.runId) {
     context.runId = canonical.runId;
+  }
+  if (canonical.agentId) {
+    context.agentId = canonical.agentId;
   }
   if (canonical.messageId) {
     context.messageId = canonical.messageId;
@@ -385,6 +396,12 @@ export function toPluginMessageReceivedEvent(
       senderName: canonical.senderName,
       senderUsername: canonical.senderUsername,
       senderE164: canonical.senderE164,
+      mediaPath: canonical.mediaPath,
+      mediaUrl: canonical.mediaUrl,
+      mediaType: canonical.mediaType,
+      mediaPaths: canonical.mediaPaths,
+      mediaUrls: canonical.mediaUrls,
+      mediaTypes: canonical.mediaTypes,
       guildId: canonical.guildId,
       channelName: canonical.channelName,
       sentByAccountOwner: canonical.isAccountOwnerMessage,

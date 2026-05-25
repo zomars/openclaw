@@ -1,3 +1,4 @@
+import { isVisibleForAgent } from "../config/agent-visibility.js";
 import { normalizeConfiguredMcpServers } from "../config/mcp-config-normalize.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -43,29 +44,6 @@ export function toCliBundleMcpServerConfig(server: BundleMcpServerConfig): Bundl
   return next as BundleMcpServerConfig;
 }
 
-function normalizeAgentList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const resolved = value
-    .map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""))
-    .filter(Boolean);
-  return resolved.length > 0 ? Array.from(new Set(resolved)) : undefined;
-}
-
-function isServerVisibleForAgent(server: Record<string, unknown>, agentId?: string): boolean {
-  const normalizedAgentId = agentId?.trim().toLowerCase();
-  const allowAgents = normalizeAgentList(server.allowAgents);
-  const denyAgents = normalizeAgentList(server.denyAgents);
-  if (allowAgents && (!normalizedAgentId || !allowAgents.includes(normalizedAgentId))) {
-    return false;
-  }
-  if (denyAgents && normalizedAgentId && denyAgents.includes(normalizedAgentId)) {
-    return false;
-  }
-  return true;
-}
-
 function stripAgentVisibilityFields(server: BundleMcpServerConfig): BundleMcpServerConfig {
   const next = { ...server } as Record<string, unknown>;
   delete next.allowAgents;
@@ -85,7 +63,7 @@ export function loadMergedBundleMcpConfig(params: {
   });
   const configuredMcp = Object.fromEntries(
     Object.entries(normalizeConfiguredMcpServers(params.cfg?.mcp?.servers))
-      .filter(([, server]) => isServerVisibleForAgent(server, params.agentId))
+      .filter(([, server]) => isVisibleForAgent(server, params.agentId))
       .map(([name, server]) => [name, stripAgentVisibilityFields(server as BundleMcpServerConfig)]),
   );
   const mapConfiguredServer = params.mapConfiguredServer ?? ((server) => server);

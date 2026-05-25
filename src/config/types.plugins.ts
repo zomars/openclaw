@@ -1,5 +1,14 @@
 export type PluginEntryConfig = {
   enabled?: boolean;
+  /**
+   * Strict opt-in: only the listed agent ids see this plugin's hooks. An
+   * absent or empty list makes the plugin inert (no hooks fire, no tools
+   * surface). Mirrors `mcp.servers.<name>.allowAgents` but is strict — there
+   * is no implicit "all agents" fallback for plugins.
+   */
+  allowAgents?: string[];
+  /** Agent ids that should never see this plugin's hooks. Subtractive on top of allowAgents. */
+  denyAgents?: string[];
   hooks?: {
     /** Controls prompt mutation via before_prompt_build and prompt fields from legacy before_agent_start. */
     allowPromptInjection?: boolean;

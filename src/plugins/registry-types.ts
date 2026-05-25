@@ -347,6 +347,10 @@ export type PluginRecord = {
   activationSource?: PluginActivationSource;
   activationReason?: string;
   status: "loaded" | "disabled" | "error";
+  /** Mirrors `plugins.entries.<id>.allowAgents`. Threaded into the hook runner for per-agent dispatch gating. */
+  allowAgents?: string[];
+  /** Mirrors `plugins.entries.<id>.denyAgents`. Subtractive on top of allowAgents. */
+  denyAgents?: string[];
   error?: string;
   failedAt?: Date;
   failurePhase?: "validation" | "load" | "register";

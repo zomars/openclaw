@@ -24127,6 +24127,24 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                   description:
                     "Per-plugin enablement override for a specific entry, applied on top of global plugin policy (restart required). Use this to stage plugin rollout gradually across environments.",
                 },
+                allowAgents: {
+                  type: "array",
+                  items: {
+                    type: "string",
+                  },
+                  title: "Plugin Allowed Agents",
+                  description:
+                    'Strict opt-in agent allowlist. Only listed agent ids see this plugin\'s hooks; an absent or empty list makes the plugin inert. Use the wildcard "*" to opt every agent in without listing names. Mirrors mcp.servers.<name>.allowAgents but plugins do not fall back to an implicit "all agents" default.',
+                },
+                denyAgents: {
+                  type: "array",
+                  items: {
+                    type: "string",
+                  },
+                  title: "Plugin Denied Agents",
+                  description:
+                    "Agent ids that should never see this plugin's hooks. Subtractive on top of allowAgents.",
+                },
                 hooks: {
                   type: "object",
                   properties: {
@@ -28946,6 +28964,16 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       label: "Plugin Enabled",
       help: "Per-plugin enablement override for a specific entry, applied on top of global plugin policy (restart required). Use this to stage plugin rollout gradually across environments.",
       tags: ["advanced"],
+    },
+    "plugins.entries.*.allowAgents": {
+      label: "Plugin Allowed Agents",
+      help: 'Strict opt-in agent allowlist. Only listed agent ids see this plugin\'s hooks; an absent or empty list makes the plugin inert. Use the wildcard "*" to opt every agent in without listing names. Mirrors mcp.servers.<name>.allowAgents but plugins do not fall back to an implicit "all agents" default.',
+      tags: ["access"],
+    },
+    "plugins.entries.*.denyAgents": {
+      label: "Plugin Denied Agents",
+      help: "Agent ids that should never see this plugin's hooks. Subtractive on top of allowAgents.",
+      tags: ["access"],
     },
     "plugins.entries.*.hooks": {
       label: "Plugin Hook Policy",
