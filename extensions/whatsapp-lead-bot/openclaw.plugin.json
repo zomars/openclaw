@@ -40,6 +40,11 @@
         "items": { "type": "string" },
         "description": "WhatsApp account IDs to handle (e.g. ['default']). Leave empty to handle all accounts."
       },
+      "delegatedPeers": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Peer JIDs or phones delegated to other agents — lead-bot skips them entirely so OpenClaw routes via bindings without lead-bot interference."
+      },
       "agentNumbers": {
         "type": "array",
         "items": { "type": "string" },

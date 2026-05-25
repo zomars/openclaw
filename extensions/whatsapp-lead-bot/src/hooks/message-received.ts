@@ -86,6 +86,14 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     return null;
   }
 
+  function filterDelegatedPeer({ event }: MessageInput): FilterResult {
+    if (deps.config.delegatedPeers?.includes(event.from)) {
+      console.log(`[lead-bot] Skipping delegated peer "${event.from}" — routed to another agent`);
+      return {};
+    }
+    return null;
+  }
+
   async function filterSelfChat({ event, runtime }: MessageInput): Promise<FilterResult> {
     const { from, content, metadata } = event;
     const to = metadata?.to as string | undefined;
@@ -260,7 +268,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     const input: MessageInput = { event, ctx, runtime: getContext().runtime };
 
     // Pre-lead filters
-    const preLeadFilters = [filterChannel, filterAccount, filterOpenClawLoop];
+    const preLeadFilters = [filterChannel, filterAccount, filterOpenClawLoop, filterDelegatedPeer];
     for (const filter of preLeadFilters) {
       const result = filter(input);
       if (result !== null) {

@@ -6,6 +6,11 @@ const zodSchema = z.object({
   // WhatsApp account filtering
   whatsappAccounts: z.array(z.string()).default(["default"]),
 
+  // Peers (group JIDs or phones) delegated to other agents — lead-bot
+  // skips them entirely so OpenClaw routes the message via bindings
+  // without any lead-bot interference (no ack, no lead row, no suppression).
+  delegatedPeers: z.array(z.string()).default([]),
+
   // Agent notification settings (handoff/lead notifications).
   // This is a subset of coworkers — only these phones receive bot alerts
   // (handoffs, new lead notifications, rate-limit warnings, etc.).
