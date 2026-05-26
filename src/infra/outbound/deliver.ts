@@ -681,7 +681,6 @@ function createMessageSentEmitter(params: {
   to: string;
   accountId?: string;
   sessionKeyForInternalHooks?: string;
-  agentId?: string;
   mirrorIsGroup?: boolean;
   mirrorGroupId?: string;
 }): { emitMessageSent: (event: MessageSentEvent) => void; hasMessageSentHooks: boolean } {
@@ -699,7 +698,6 @@ function createMessageSentEmitter(params: {
       channelId: params.channel,
       accountId: params.accountId ?? undefined,
       conversationId: params.to,
-      agentId: params.agentId,
       messageId: event.messageId,
       isGroup: params.mirrorIsGroup,
       groupId: params.mirrorGroupId,
@@ -745,7 +743,6 @@ async function applyMessageSendingHook(params: {
   to: string;
   channel: Exclude<OutboundChannel, "none">;
   accountId?: string;
-  agentId?: string;
   replyToId?: string | null;
   threadId?: string | number | null;
 }): Promise<{
@@ -778,7 +775,6 @@ async function applyMessageSendingHook(params: {
         channelId: params.channel,
         accountId: params.accountId ?? undefined,
         conversationId: params.to,
-        agentId: params.agentId,
       },
     );
     if (sendingResult?.cancel) {
@@ -1015,7 +1011,6 @@ async function deliverOutboundPayloadsCore(
     to,
     accountId,
     sessionKeyForInternalHooks,
-    agentId: params.session?.agentId ?? params.mirror?.agentId,
     mirrorIsGroup,
     mirrorGroupId,
   });
@@ -1086,7 +1081,6 @@ async function deliverOutboundPayloadsCore(
         to,
         channel,
         accountId,
-        agentId: params.session?.agentId ?? params.mirror?.agentId,
         replyToId: resolveCurrentReplyTo(payload).replyToId,
         threadId: params.threadId,
       });

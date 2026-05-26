@@ -208,6 +208,107 @@ describe("plugin agent scoping at the hook dispatcher", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("derives agentId from sessionKey when ctx.agentId is missing (single chokepoint)", async () => {
+    const handler = vi.fn(
+      (): PluginHookMessageReceivedResult => ({ suppress: true, suppressReason: "test" }),
+    );
+    attachPluginRecord(registry, {
+      id: "whatsapp-lead-bot",
+      allowAgents: ["solayre-leads"],
+    });
+    addTestHook({
+      registry,
+      pluginId: "whatsapp-lead-bot",
+      hookName: "message_received",
+      handler: handler as PluginHookRegistration["handler"],
+    });
+    const runner = createHookRunner(registry);
+
+    // A ctx that DOES NOT thread agentId explicitly, but carries an
+    // `agent:solayre-leads:...` sessionKey. The filter must still admit the
+    // message — no leak — by deriving the agent id from the key.
+    const ctxWithSessionKeyOnly = {
+      channelId: "whatsapp",
+      sessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5215555555555",
+    } as unknown as PluginHookMessageContext;
+    await runner.runMessageReceived(
+      { from: "+5215555555555", content: "hi" },
+      ctxWithSessionKeyOnly,
+    );
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    // Same sessionKey shape but for a different agent must be filtered out
+    // for a plugin whose allowAgents excludes that agent.
+    handler.mockClear();
+    const ctxForCoworker = {
+      channelId: "whatsapp",
+      sessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5215555555555",
+    } as unknown as PluginHookMessageContext;
+    await runner.runMessageReceived({ from: "+5215555555555", content: "hi" }, ctxForCoworker);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("derives agentId from requesterSessionKey or childSessionKey for subagent-shaped ctx", async () => {
+    const handler = vi.fn(
+      (): PluginHookMessageReceivedResult => ({ suppress: true, suppressReason: "test" }),
+    );
+    attachPluginRecord(registry, {
+      id: "whatsapp-lead-bot",
+      allowAgents: ["solayre-leads"],
+    });
+    addTestHook({
+      registry,
+      pluginId: "whatsapp-lead-bot",
+      hookName: "message_received",
+      handler: handler as PluginHookRegistration["handler"],
+    });
+    const runner = createHookRunner(registry);
+
+    // Subagent-shaped ctx carries requesterSessionKey + childSessionKey rather
+    // than sessionKey. The chokepoint must still derive an agent id from one
+    // of them so subagent hooks don't bypass per-agent scoping.
+    const ctx = {
+      channelId: "whatsapp",
+      requesterSessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5215555555555",
+      childSessionKey: "agent:solayre-leads:subagent:1",
+    } as unknown as PluginHookMessageContext;
+    await runner.runMessageReceived({ from: "+5215555555555", content: "hi" }, ctx);
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    handler.mockClear();
+    const ctxForOther = {
+      channelId: "whatsapp",
+      requesterSessionKey: "agent:solayre-coworker:whatsapp:solayre:direct:5215555555555",
+    } as unknown as PluginHookMessageContext;
+    await runner.runMessageReceived({ from: "+5215555555555", content: "hi" }, ctxForOther);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("explicit ctx.agentId wins over sessionKey-derived agent id", async () => {
+    const handler = vi.fn();
+    attachPluginRecord(registry, {
+      id: "whatsapp-lead-bot",
+      allowAgents: ["solayre-leads"],
+    });
+    addTestHook({
+      registry,
+      pluginId: "whatsapp-lead-bot",
+      hookName: "message_received",
+      handler: handler as PluginHookRegistration["handler"],
+    });
+    const runner = createHookRunner(registry);
+
+    // sessionKey would resolve to solayre-leads, but explicit agentId is
+    // solayre-coworker. Explicit value must win → filter skips lead-bot.
+    const ctx = {
+      channelId: "whatsapp",
+      agentId: "solayre-coworker",
+      sessionKey: "agent:solayre-leads:whatsapp:solayre:direct:5215555555555",
+    } as unknown as PluginHookMessageContext;
+    await runner.runMessageReceived({ from: "+5215555555555", content: "hi" }, ctx);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("does not filter gateway-wide hooks whose context has no agentId field", async () => {
     const handler = vi.fn();
     attachPluginRecord(registry, { id: "memory-core" }); // no allowAgents = strict opt-in
@@ -220,14 +321,7 @@ describe("plugin agent scoping at the hook dispatcher", () => {
     const runner = createHookRunner(registry);
     // gateway_start context has no `agentId` field, so the filter must not
     // strip the hook just because allowAgents is missing.
-    await runner.runGatewayStart(
-      { reason: "manual" },
-      {
-        startedAt: new Date().toISOString(),
-        gatewayVersion: "test",
-        sessionsDir: "/tmp",
-      },
-    );
+    await runner.runGatewayStart({ port: 18789 }, { port: 18789, workspaceDir: "/tmp" });
     expect(handler).toHaveBeenCalledTimes(1);
   });
 

@@ -8,6 +8,7 @@
 import { isPluginVisibleForAgent } from "../config/agent-visibility.js";
 import { formatHookErrorForLog } from "../hooks/fire-and-forget.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
 import type { GlobalHookRunnerRegistry, HookRunnerRegistry } from "./hook-registry.types.js";
 import type {
@@ -247,32 +248,94 @@ function getHooksForNameAndPlugin<K extends PluginHookName>(
 }
 
 /**
+ * Hooks whose context is never agent-scoped. Plugin `allowAgents` does not
+ * apply — the gateway invokes them for every registered plugin regardless of
+ * which agents may currently be active. This set IS the single chokepoint for
+ * agent-scope policy: every other hook is treated as agent-scoped, and the
+ * filter derives `agentId` from `ctx.agentId` or by parsing `ctx.sessionKey`.
+ *
+ * Keep this list short. Adding a hook here exempts every plugin from
+ * per-agent enforcement for that hook.
+ */
+const GATEWAY_WIDE_HOOK_NAMES: ReadonlySet<PluginHookName> = new Set<PluginHookName>([
+  "gateway_start",
+  "gateway_stop",
+  "cron_changed",
+  "before_install",
+]);
+
+/**
+ * Extracts an agent id from a hook context. Single point of truth for "which
+ * agent does this hook invocation belong to" so callers cannot leak by
+ * forgetting to thread `agentId` through.
+ *
+ *   1. If `ctx.agentId` is a non-empty string, use it.
+ *   2. Otherwise, parse from `ctx.sessionKey` (every agent-scoped session key
+ *      in this codebase starts with `agent:<id>:...`).
+ *   3. Otherwise, return undefined.
+ *
+ * Plugins with strict `allowAgents` block when this returns undefined for an
+ * agent-scoped hook.
+ */
+function resolveContextAgentId(ctx: unknown): string | undefined {
+  if (typeof ctx !== "object" || ctx === null) {
+    return undefined;
+  }
+  const obj = ctx as {
+    agentId?: unknown;
+    sessionKey?: unknown;
+    requesterSessionKey?: unknown;
+    childSessionKey?: unknown;
+  };
+  if (typeof obj.agentId === "string" && obj.agentId.length > 0) {
+    return obj.agentId;
+  }
+  for (const key of [obj.sessionKey, obj.requesterSessionKey, obj.childSessionKey]) {
+    if (typeof key !== "string") {
+      continue;
+    }
+    const parsed = parseAgentSessionKey(key);
+    if (parsed?.agentId) {
+      return parsed.agentId;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Filter the hooks list by the plugin's `allowAgents`/`denyAgents` policy
  * resolved against the agent id in this hook context.
  *
+ * This is the single chokepoint for per-agent plugin scoping. Call sites only
+ * have to pass the canonical ctx (which carries either `agentId` or
+ * `sessionKey`); the filter handles derivation. There is no requirement that
+ * every call site thread `agentId` explicitly — but doing so is harmless and
+ * is preferred where the value is already in scope.
+ *
  * Behavior:
- * - When the ctx is NOT agent-scoped (no `agentId` field declared at all),
- *   we don't filter. Gateway-wide hooks like `gateway_start`/`gateway_stop`
- *   keep firing regardless of plugin scoping.
- * - When the ctx IS agent-scoped, strict opt-in applies: a plugin with no
- *   `allowAgents` is inert. This mirrors the user-facing config contract.
+ * - Hooks listed in `GATEWAY_WIDE_HOOK_NAMES` always fire (no agent scope).
+ * - Other hooks resolve agentId via `resolveContextAgentId(ctx)`. Plugins
+ *   with strict `allowAgents` only fire when their list includes the
+ *   resolved agentId. A plugin without `allowAgents` is inert for every
+ *   agent-scoped hook.
  * - When the registry has no plugin record for a given pluginId (test
  *   fixtures, embedded mode), we let the hook through so isolated tests and
  *   composition-root tests keep working without a populated record table.
  */
 function filterHooksByAgentVisibility<K extends PluginHookName>(
   registry: HookRunnerRegistry,
+  hookName: K,
   hooks: PluginHookRegistration<K>[],
   ctx: unknown,
 ): PluginHookRegistration<K>[] {
-  if (!isAgentScopedContext(ctx)) {
+  if (GATEWAY_WIDE_HOOK_NAMES.has(hookName)) {
     return hooks;
   }
   const records = (registry as Partial<GlobalHookRunnerRegistry>).plugins;
   if (!records || records.length === 0) {
     return hooks;
   }
-  const agentId = typeof ctx.agentId === "string" ? ctx.agentId : undefined;
+  const agentId = resolveContextAgentId(ctx);
   return hooks.filter((hook) => {
     const record = records.find((p) => p.id === hook.pluginId);
     if (!record) {
@@ -283,10 +346,6 @@ function filterHooksByAgentVisibility<K extends PluginHookName>(
       agentId,
     );
   });
-}
-
-function isAgentScopedContext(ctx: unknown): ctx is { agentId?: unknown } {
-  return typeof ctx === "object" && ctx !== null && "agentId" in ctx;
 }
 
 /**
@@ -571,7 +630,12 @@ export function createHookRunner(
     event: Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[0],
     ctx: Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[1],
   ): Promise<void> {
-    const hooks = filterHooksByAgentVisibility(registry, getHooksForName(registry, hookName), ctx);
+    const hooks = filterHooksByAgentVisibility(
+      registry,
+      hookName,
+      getHooksForName(registry, hookName),
+      ctx,
+    );
     if (hooks.length === 0) {
       return;
     }
@@ -607,7 +671,12 @@ export function createHookRunner(
     ctx: Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[1],
     policy: ModifyingHookPolicy<K, TResult> = {},
   ): Promise<TResult | undefined> {
-    const hooks = filterHooksByAgentVisibility(registry, getHooksForName(registry, hookName), ctx);
+    const hooks = filterHooksByAgentVisibility(
+      registry,
+      hookName,
+      getHooksForName(registry, hookName),
+      ctx,
+    );
     if (hooks.length === 0) {
       return undefined;
     }
@@ -655,7 +724,12 @@ export function createHookRunner(
     event: Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[0],
     ctx: Parameters<NonNullable<PluginHookRegistration<K>["handler"]>>[1],
   ): Promise<TResult | undefined> {
-    const hooks = filterHooksByAgentVisibility(registry, getHooksForName(registry, hookName), ctx);
+    const hooks = filterHooksByAgentVisibility(
+      registry,
+      hookName,
+      getHooksForName(registry, hookName),
+      ctx,
+    );
     if (hooks.length === 0) {
       return undefined;
     }
@@ -1180,6 +1254,7 @@ export function createHookRunner(
   ): PluginHookToolResultPersistResult | undefined {
     const hooks = filterHooksByAgentVisibility(
       registry,
+      "tool_result_persist",
       getHooksForName(registry, "tool_result_persist"),
       ctx,
     );
@@ -1244,6 +1319,7 @@ export function createHookRunner(
   ): PluginHookBeforeMessageWriteResult | undefined {
     const hooks = filterHooksByAgentVisibility(
       registry,
+      "before_message_write",
       getHooksForName(registry, "before_message_write"),
       ctx,
     );
