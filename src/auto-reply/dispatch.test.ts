@@ -245,7 +245,15 @@ describe("withReplyDispatcher", () => {
 
     expect(payload).toEqual({ text: "sanitized reply" });
     expect(runMessageSending).toHaveBeenCalledWith(
-      { content: "original reply", to: "whatsapp:+15551234567" },
+      {
+        content: "original reply",
+        to: "whatsapp:+15551234567",
+        metadata: {
+          channel: "threads",
+          accountId: "acct-1",
+          openclawInitiated: true,
+        },
+      },
       {
         channelId: "threads",
         accountId: "acct-1",

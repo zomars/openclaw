@@ -65,12 +65,14 @@ export function createMessageSendingHandler(deps: MessageSendingHandlerDeps) {
       return {};
     }
 
-    // Check if message was initiated by OpenClaw (the bot)
-    // - openclawInitiated === true → Message from OpenClaw bot → NO handoff
-    // - openclawInitiated === false/undefined → Message from human → HANDOFF!
+    // Check if message was explicitly marked as initiated by OpenClaw (the bot).
+    // Some core auto-reply paths invoke message_sending without metadata, so
+    // absence of openclawInitiated is not proof that a human agent took over.
+    // Only trigger handoff on an explicit human signal.
     const isOpenClawMessage = metadata?.openclawInitiated === true;
+    const isExplicitHumanMessage = metadata?.openclawInitiated === false;
 
-    if (!isOpenClawMessage && lead.status !== "handed_off") {
+    if (isExplicitHumanMessage && lead.status !== "handed_off") {
       await deps.handoffManager.triggerHumanMessageHandoff(lead.id);
     }
 

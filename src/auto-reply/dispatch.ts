@@ -81,7 +81,15 @@ function buildMessageSendingBeforeDeliver(
     }
 
     const result = await hookRunner.runMessageSending(
-      { content: payload.text, to: replyTarget },
+      {
+        content: payload.text,
+        to: replyTarget,
+        metadata: {
+          channel: hookCtx.channelId,
+          accountId: hookCtx.accountId,
+          openclawInitiated: true,
+        },
+      },
       toPluginMessageContext(hookCtx),
     );
 

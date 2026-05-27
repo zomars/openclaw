@@ -1,12 +1,17 @@
 import { describe, it, expect } from "vitest";
+import { HandoffManager } from "../../handoff/manager.js";
 import { MessageQueue } from "../../hooks/message-queue.js";
-import { checkLeadContentFilter } from "../../hooks/message-sending.js";
+import {
+  checkLeadContentFilter,
+  createMessageSendingHandler,
+} from "../../hooks/message-sending.js";
 import { splitAgentResponse } from "../../hooks/multi-message-splitter.js";
 import { CircuitBreaker } from "../../rate-limit/circuit-breaker.js";
 import { RateLimitCoordinator } from "../../rate-limit/coordinator.js";
 import { GlobalRateLimiter } from "../../rate-limit/global-limiter.js";
 import { RateLimiter } from "../../rate-limit/limiter.js";
 import { FakeNotifier } from "../helpers/fake-notifier.js";
+import { createTestConfig } from "../helpers/test-config.js";
 import { createTestDb } from "../helpers/tmp-db.js";
 
 describe("System / Operations Stories", () => {
@@ -430,7 +435,57 @@ describe("System / Operations Stories", () => {
     expect(r2.accountId).toBe("acct-B");
   });
 
-  it("46. logs content filter violations when bot output contains system-internal keywords", () => {
+  it("46. does not hand off auto-replies when message_sending metadata is missing", async () => {
+    const { db } = createTestDb();
+    const notifier = new FakeNotifier();
+    const handoffManager = new HandoffManager(db, notifier);
+    const handler = createMessageSendingHandler({
+      db,
+      config: createTestConfig(),
+      handoffManager,
+      messageQueue: new MessageQueue(),
+    });
+
+    await db.getOrCreateLead("+5215549098913");
+
+    await handler(
+      { to: "5215549098913", content: "Hola, soy el bot." },
+      { channelId: "whatsapp", accountId: "default" },
+    );
+
+    const updated = await db.getLeadByPhone("5215549098913");
+    expect(updated!.status).not.toBe("handed_off");
+    expect(notifier.handoffs).toHaveLength(0);
+  });
+
+  it("47. hands off only when message_sending has an explicit human signal", async () => {
+    const { db } = createTestDb();
+    const notifier = new FakeNotifier();
+    const handoffManager = new HandoffManager(db, notifier);
+    const handler = createMessageSendingHandler({
+      db,
+      config: createTestConfig(),
+      handoffManager,
+      messageQueue: new MessageQueue(),
+    });
+
+    await db.getOrCreateLead("+5215549098914");
+
+    await handler(
+      {
+        to: "5215549098914",
+        content: "Mensaje manual del vendedor.",
+        metadata: { openclawInitiated: false },
+      },
+      { channelId: "whatsapp", accountId: "default" },
+    );
+
+    const updated = await db.getLeadByPhone("5215549098914");
+    expect(updated!.status).toBe("handed_off");
+    expect(notifier.handoffs).toHaveLength(1);
+  });
+
+  it("48. logs content filter violations when bot output contains system-internal keywords", () => {
     // Matches bot self-identification
     expect(checkLeadContentFilter("Soy un bot de atención")).toBeTruthy();
 
