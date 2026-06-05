@@ -152,9 +152,8 @@ export const processLeadCFEReceiptTool = {
 
     // 6. Send summary + attachment
     const summary = buildSummaryMessage({
-      titular: customerName,
       quote: result.quote,
-      quoteNumber: result.quoteNumber,
+      cfe: result.cfe,
     });
 
     try {
@@ -181,25 +180,27 @@ export const processLeadCFEReceiptTool = {
 };
 
 function buildSummaryMessage(input: {
-  titular: string;
   quote: ParseAndQuoteResult["quote"];
-  quoteNumber: string;
+  cfe: ParseAndQuoteResult["cfe"];
 }): string {
-  const fmt = (n?: number): string =>
-    typeof n === "number" && Number.isFinite(n) ? `$${Math.round(n).toLocaleString("es-MX")}` : "—";
+  const fmtMoney = (n: number): string => `$${Math.round(n).toLocaleString("es-MX")}`;
+  const fmtNumber = (n: number, digits = 0): string =>
+    n.toLocaleString("es-MX", { maximumFractionDigits: digits });
+  const fmtYears = (n: number): string => n.toFixed(1);
+
+  const serviceNumber = input.cfe.data.serviceNumber;
+  const annualConsumption = input.cfe.data.annualConsumption;
 
   return [
-    `Hola ${input.titular}, aquí está su cotización solar.`,
-    `Folio: ${input.quoteNumber}`,
-    "",
-    `*Sistema propuesto*`,
-    `• Paneles: ${input.quote.panelCount}`,
-    `• Cobertura: ${input.quote.coveragePercent}%`,
-    `• Inversión contado: ${fmt(input.quote.cashPrice)}`,
-    `• Inversión total: ${fmt(input.quote.listPrice)}`,
-    `• Ahorro anual: ${fmt(input.quote.annualSavings)}`,
-    `• Recuperación: ${input.quote.paybackYears.toFixed(1)} años`,
-    "",
-    "Adjunto el PDF con el detalle completo. Cualquier duda, con gusto le explico.",
+    `En su medidor ${serviceNumber}, el ultimo año gasto ${fmtNumber(annualConsumption)} KWh`,
+    `Para cubrir el ${fmtNumber(input.quote.coveragePercent)}% de consumo, necesitamos producir ${fmtNumber(input.quote.systemKw, 2)} kW de energia`,
+    `Serían ${fmtNumber(input.quote.panelCount)} paneles de ${fmtNumber(input.quote.panelWattage)}W.`,
+    "Tienen una garantía de 25 años de producción.",
+    `Si seguimos sin placas solares en 25 años pagará ${fmtMoney(input.quote.fomo25Years)} de luz a la CFE.`,
+    `El precio de la plana financiada es de ${fmtMoney(input.quote.financedPrice)} hasta 4 años`,
+    `El precio de contado es de ${fmtMoney(input.quote.cashPrice)} (pagando 50% de anticipo instalamos por completo y se liquida en menos de 2 meses posteriores a la instalacaion)`,
+    `Aprovechando el precio de contado el retorno de inversion se cumple en ${fmtYears(input.quote.paybackYears)} años`,
+    `Y en 25 años que es la garantía de rendimiento de las placas, habra recuperado el ${fmtNumber(input.quote.roi25YearsPercent)}% de lo invertido.`,
+    "Le comparto el documento con todos los detalles",
   ].join("\n");
 }

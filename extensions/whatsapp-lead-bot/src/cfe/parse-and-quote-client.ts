@@ -1,7 +1,7 @@
 /**
  * Parse-and-Quote API Client
  *
- * Async flow: POST /parse-and-quote → 202 + requestId → poll GET /check-request/{id}
+ * Async flow: POST /parse-and-quote → 202 + requestId → long-poll GET /check-request/{id}?waitMs=N
  */
 
 import * as fs from "node:fs";
@@ -18,14 +18,18 @@ export interface ParseAndQuoteResult {
     annualSavings: number;
     coveragePercent: number;
     paybackYears: number;
-    systemKw?: number;
+    systemKw: number;
+    panelWattage: number;
+    financedPrice: number;
+    fomo25Years: number;
+    roi25YearsPercent: number;
   };
-  cfe?: {
-    data?: {
+  cfe: {
+    data: {
       customerName?: string;
-      serviceNumber?: string;
+      serviceNumber: string;
       tariffType?: string;
-      annualConsumption?: number;
+      annualConsumption: number;
     };
   };
 }
@@ -77,14 +81,17 @@ export interface ClientDeps {
   apiUrl: string;
   /** Synchronous quote-revision endpoint (calculate-quote). */
   editQuoteUrl: string;
-  /** Polling interval in ms (default 2500) */
+  /** Backoff interval in ms for non-terminal immediate responses (default 2500). */
   pollIntervalMs?: number;
+  /** Per-request long-poll wait in ms (default 25000, server clamps to 30000). */
+  longPollWaitMs?: number;
   /** Total timeout in ms (default 120000) */
   timeoutMs?: number;
 }
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_POLL_INTERVAL_MS = 2500;
+const DEFAULT_LONG_POLL_WAIT_MS = 25_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 function detectFileType(buffer: Buffer): { mime: string; ext: string } | null {
@@ -135,6 +142,28 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
   const coveragePercent = num(q.actualCoverage ?? q.coveragePercent);
   const paybackYears = num(q.paybackYears);
 
+  const systemKw = num(q.actualInstalledPowerKw ?? q.installedPowerKw ?? q.systemKw);
+  const panelWattage = num(
+    q.panelWattage ??
+      q.panelWatts ??
+      q.panelPowerW ??
+      q.panelPowerWatts ??
+      q.moduleWattage ??
+      q.wattage,
+  );
+  const financedPrice = num(
+    q.financedPrice ?? q.financingPrice ?? q.financedTotal ?? q.totalFinancedPrice ?? q.creditPrice,
+  );
+  const fomo25Years = num(
+    q.fomo25Years ?? q.twentyFiveYearCfeCost ?? q.cfeCost25Years ?? q.projectedCfeCost25Years,
+  );
+  const roi25YearsPercent = num(
+    q.roi25YearsPercent ??
+      q.twentyFiveYearRoiPercent ??
+      q.roiPercent25Years ??
+      q.return25YearsPercent,
+  );
+
   const required = {
     quoteId,
     quoteNumber,
@@ -145,6 +174,11 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
     annualSavings,
     coveragePercent,
     paybackYears,
+    systemKw,
+    panelWattage,
+    financedPrice,
+    fomo25Years,
+    roi25YearsPercent,
   };
   for (const [k, v] of Object.entries(required)) {
     if (typeof v === "number" ? !Number.isFinite(v) : !v) {
@@ -156,8 +190,28 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
     }
   }
 
-  const systemKwRaw = num(q.actualInstalledPowerKw ?? q.systemKw);
-  const cfe = (json.cfe ?? undefined) as ParseAndQuoteResult["cfe"];
+  const cfeRaw = (json.cfe ?? {}) as Record<string, unknown>;
+  const cfeData = (cfeRaw.data ?? {}) as Record<string, unknown>;
+  const serviceNumber = str(cfeData.serviceNumber);
+  const annualConsumption = num(cfeData.annualConsumption);
+  if (!serviceNumber || !Number.isFinite(annualConsumption)) {
+    console.error(
+      "[parse-and-quote-client] response missing required CFE fields. Raw JSON:",
+      JSON.stringify(json),
+    );
+    return {
+      success: false,
+      error: "response missing required CFE fields: serviceNumber/annualConsumption",
+    };
+  }
+  const cfe: ParseAndQuoteResult["cfe"] = {
+    data: {
+      ...(str(cfeData.customerName) ? { customerName: str(cfeData.customerName) } : {}),
+      serviceNumber,
+      ...(str(cfeData.tariffType) ? { tariffType: str(cfeData.tariffType) } : {}),
+      annualConsumption,
+    },
+  };
 
   return {
     success: true,
@@ -171,7 +225,11 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
       annualSavings,
       coveragePercent,
       paybackYears,
-      ...(Number.isFinite(systemKwRaw) ? { systemKw: systemKwRaw } : {}),
+      systemKw,
+      panelWattage,
+      financedPrice,
+      fomo25Years,
+      roi25YearsPercent,
     },
     cfe,
   };
@@ -179,6 +237,7 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
 
 export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient {
   const pollInterval = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const longPollWaitMs = deps.longPollWaitMs ?? DEFAULT_LONG_POLL_WAIT_MS;
   const timeout = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const base = baseUrl(deps.apiUrl);
 
@@ -250,20 +309,23 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
         return { success: false, error: "submit response missing requestId" };
       }
 
-      // Step 2: Poll until done/error or timeout.
-      // On cache hit (status==="done"), poll immediately to fetch the cached result
-      // without waiting a full interval.
+      // Step 2: Long-poll until done/error or timeout.
+      // On cache hit (status==="done"), request immediate status to fetch the cached result.
+      // If an older server ignores waitMs and returns queued/processing immediately, back off
+      // with pollInterval to avoid tight client-side polling.
       const deadline = Date.now() + timeout;
-      const pollUrl = `${base}/check-request/${requestId}`;
-      const cacheHit = submitJson.status === "done";
+      let immediateFirstPoll = submitJson.status === "done";
 
-      let firstPoll = true;
       while (Date.now() < deadline) {
-        if (!firstPoll || !cacheHit) {
-          await sleep(pollInterval);
+        const remainingMs = deadline - Date.now();
+        const waitMs = immediateFirstPoll ? 0 : Math.max(0, Math.min(longPollWaitMs, remainingMs));
+        immediateFirstPoll = false;
+        const pollUrl = new URL(`${base}/check-request/${requestId}`);
+        if (waitMs > 0) {
+          pollUrl.searchParams.set("waitMs", String(waitMs));
         }
-        firstPoll = false;
 
+        const pollStartedAt = Date.now();
         let pollResponse: Response;
         try {
           pollResponse = await fetch(pollUrl, {
@@ -312,7 +374,12 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
           return { success: false, error: errMsg };
         }
 
-        // queued or processing — continue polling
+        // queued or processing — continue polling. If the response came back quickly,
+        // the server may be old or the wait window may have been tiny; back off locally.
+        const elapsedMs = Date.now() - pollStartedAt;
+        if (elapsedMs < Math.min(1000, waitMs) && Date.now() + pollInterval < deadline) {
+          await sleep(pollInterval);
+        }
       }
 
       return {
@@ -400,12 +467,51 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
         const annualSavings = num(results.annualSavings);
         const coveragePercent = num(results.actualCoverage ?? results.coveragePercent);
         const paybackYears = num(results.paybackYears);
+        const systemKw = num(
+          results.actualInstalledPowerKw ?? results.installedPowerKw ?? results.systemKw,
+        );
+        const panelWattage = num(
+          results.panelWattage ??
+            results.panelWatts ??
+            results.panelPowerW ??
+            results.panelPowerWatts ??
+            results.moduleWattage ??
+            results.wattage,
+        );
+        const financedPrice = num(
+          results.financedPrice ??
+            results.financingPrice ??
+            results.financedTotal ??
+            results.totalFinancedPrice ??
+            results.creditPrice,
+        );
+        const fomo25Years = num(
+          results.fomo25Years ??
+            results.twentyFiveYearCfeCost ??
+            results.cfeCost25Years ??
+            results.projectedCfeCost25Years,
+        );
+        const roi25YearsPercent = num(
+          results.roi25YearsPercent ??
+            results.twentyFiveYearRoiPercent ??
+            results.roiPercent25Years ??
+            results.return25YearsPercent,
+        );
         if (
-          [panelCount, cashPrice, listPrice, annualSavings, coveragePercent, paybackYears].every(
-            (v) => Number.isFinite(v),
-          )
+          [
+            panelCount,
+            cashPrice,
+            listPrice,
+            annualSavings,
+            coveragePercent,
+            paybackYears,
+            systemKw,
+            panelWattage,
+            financedPrice,
+            fomo25Years,
+            roi25YearsPercent,
+          ].every((v) => Number.isFinite(v))
         ) {
-          const systemKwRaw = num(results.actualInstalledPowerKw ?? results.systemKw);
           quote = {
             panelCount,
             cashPrice,
@@ -413,7 +519,11 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
             annualSavings,
             coveragePercent,
             paybackYears,
-            ...(Number.isFinite(systemKwRaw) ? { systemKw: systemKwRaw } : {}),
+            systemKw,
+            panelWattage,
+            financedPrice,
+            fomo25Years,
+            roi25YearsPercent,
           };
         }
       }

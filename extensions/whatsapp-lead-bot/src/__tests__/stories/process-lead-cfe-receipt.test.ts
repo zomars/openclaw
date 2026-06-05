@@ -21,6 +21,11 @@ const SAMPLE_OK: ParseAndQuoteResult = {
     annualSavings: 14000,
     coveragePercent: 92,
     paybackYears: 4.8,
+    systemKw: 5.5,
+    panelWattage: 550,
+    financedPrice: 190000,
+    fomo25Years: 350000,
+    roi25YearsPercent: 233,
   },
   cfe: {
     data: {
@@ -113,8 +118,21 @@ describe("process_lead_cfe_receipt tool", () => {
     expect(runtime.sentMessages).toHaveLength(2);
     const final = runtime.sentMessages[1];
     expect(final.to).toBe(CUSTOMER_PHONE);
-    expect(final.content.text).toContain("SOL20260506-9999");
-    expect(final.content.text).toContain("$150,000");
+    expect(final.content.text).toContain(
+      "En su medidor 546900701643, el ultimo año gasto 9,634 KWh",
+    );
+    expect(final.content.text).toContain(
+      "Para cubrir el 92% de consumo, necesitamos producir 5.5 kW de energia",
+    );
+    expect(final.content.text).toContain("Serían 10 paneles de 550W.");
+    expect(final.content.text).toContain(
+      "Si seguimos sin placas solares en 25 años pagará $350,000 de luz a la CFE.",
+    );
+    expect(final.content.text).toContain(
+      "El precio de la plana financiada es de $190,000 hasta 4 años",
+    );
+    expect(final.content.text).toContain("El precio de contado es de $150,000");
+    expect(final.content.text).toContain("habra recuperado el 233% de lo invertido.");
     expect(final.content.metadata?.filePath).toBe(state.downloads[0].dest);
   });
 
