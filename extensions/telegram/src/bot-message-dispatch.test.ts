@@ -54,6 +54,7 @@ const createChannelReplyPipeline = vi.hoisted(() =>
 );
 const wasSentByBot = vi.hoisted(() => vi.fn(() => false));
 const loadSessionStore = vi.hoisted(() => vi.fn());
+const updateSessionStore = vi.hoisted(() => vi.fn());
 const resolveStorePath = vi.hoisted(() => vi.fn(() => "/tmp/sessions.json"));
 const generateTopicLabel = vi.hoisted(() => vi.fn());
 const describeStickerImage = vi.hoisted(() => vi.fn(async () => null));
@@ -104,6 +105,7 @@ vi.mock("./bot-message-dispatch.runtime.js", () => ({
   generateTopicLabel,
   getAgentScopedMediaLocalRoots,
   loadSessionStore,
+  updateSessionStore,
   resolveAutoTopicLabelConfig: resolveAutoTopicLabelConfigRuntime,
   resolveChunkMode,
   resolveMarkdownTableMode,
@@ -239,6 +241,8 @@ describe("dispatchTelegramMessage draft streaming", () => {
     wasSentByBot.mockReturnValue(false);
     resolveStorePath.mockReturnValue("/tmp/sessions.json");
     loadSessionStore.mockReturnValue({});
+    updateSessionStore.mockReset();
+    updateSessionStore.mockImplementation(async (_storePath, mutator) => mutator({}));
     generateTopicLabel.mockResolvedValue("Topic label");
     describeStickerImage.mockResolvedValue(null);
     loadModelCatalog.mockResolvedValue({});
@@ -4715,6 +4719,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
       return { queuedFinal: true };
     });
     loadSessionStore.mockReturnValue({});
+    updateSessionStore.mockImplementation(async (_storePath, mutator) => mutator({ s1: {} }));
     const bot = createBot();
 
     await dispatchWithContext({
@@ -4743,6 +4748,36 @@ describe("dispatchTelegramMessage draft streaming", () => {
         agentDir: "/tmp/agent",
         model: "ds-flash",
       });
+      expect(bot.api.editForumTopic).toHaveBeenCalledWith(123, 777, { name: "Topic label" });
+    });
+  });
+
+  it("attempts auto-topic-label once for an existing topic session without prior attempt", async () => {
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "Listo" }, { kind: "final" });
+      return { queuedFinal: true };
+    });
+    loadSessionStore.mockReturnValue({ s1: { systemSent: true } });
+    updateSessionStore.mockImplementation(async (_storePath, mutator) =>
+      mutator({ s1: { sessionId: "sid", updatedAt: 1, systemSent: true } }),
+    );
+    const bot = createBot();
+
+    await dispatchWithContext({
+      bot,
+      context: createContext({
+        ctxPayload: {
+          SessionKey: "s1",
+          RawBody: "Arreglar nombres de topics",
+        } as TelegramMessageContext["ctxPayload"],
+      }),
+      telegramCfg: { autoTopicLabel: { enabled: true, model: "ds-flash" } },
+    });
+
+    await vi.waitFor(() => {
+      expect(generateTopicLabel).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "ds-flash", userMessage: "Arreglar nombres de topics" }),
+      );
       expect(bot.api.editForumTopic).toHaveBeenCalledWith(123, 777, { name: "Topic label" });
     });
   });

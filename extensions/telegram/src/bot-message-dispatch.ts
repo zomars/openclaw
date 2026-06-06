@@ -57,6 +57,7 @@ import {
   resolveChunkMode,
   resolveMarkdownTableMode,
   resolveSessionStoreEntry,
+  updateSessionStore,
 } from "./bot-message-dispatch.runtime.js";
 import type { TelegramBotOptions } from "./bot.types.js";
 import { deliverReplies, emitInternalMessageSentHook } from "./bot/delivery.js";
@@ -100,6 +101,47 @@ const silentReplyDispatchLogger = createSubsystemLogger("telegram/silent-reply-d
 
 /** Minimum chars before sending first streaming message (improves push notification UX) */
 const DRAFT_MIN_INITIAL_CHARS = 30;
+
+function hasTelegramAutoTopicLabelAttempt(entry: unknown): boolean {
+  const pluginExtensions = (entry as { pluginExtensions?: unknown } | null | undefined)
+    ?.pluginExtensions;
+  if (!pluginExtensions || typeof pluginExtensions !== "object") {
+    return false;
+  }
+  const telegram = (pluginExtensions as Record<string, unknown>).telegram;
+  if (!telegram || typeof telegram !== "object") {
+    return false;
+  }
+  const autoTopicLabel = (telegram as Record<string, unknown>).autoTopicLabel;
+  if (!autoTopicLabel || typeof autoTopicLabel !== "object") {
+    return false;
+  }
+  return typeof (autoTopicLabel as Record<string, unknown>).attemptedAt === "number";
+}
+
+async function markTelegramAutoTopicLabelAttempt(params: {
+  storePath: string;
+  sessionKey: string;
+  threadId: number;
+}): Promise<boolean> {
+  return await updateSessionStore(params.storePath, (store) => {
+    const entry = store[params.sessionKey];
+    if (!entry || hasTelegramAutoTopicLabelAttempt(entry)) {
+      return false;
+    }
+    entry.pluginExtensions = {
+      ...(entry.pluginExtensions ?? {}),
+      telegram: {
+        ...(entry.pluginExtensions?.telegram ?? {}),
+        autoTopicLabel: {
+          attemptedAt: Date.now(),
+          threadId: params.threadId,
+        },
+      },
+    };
+    return true;
+  });
+}
 
 async function resolveStickerVisionSupport(cfg: OpenClawConfig, agentId: string) {
   try {
@@ -752,6 +794,8 @@ export const dispatchTelegramMessage = async ({
   let suppressSilentReplyFallback = false;
   let hadErrorReplyFailureOrSkip = false;
   let isFirstTurnInSession = false;
+  let autoTopicLabelAttempted = false;
+  let autoTopicLabelStorePath: string | null = null;
   let dispatchError: unknown;
 
   try {
@@ -911,6 +955,7 @@ export const dispatchTelegramMessage = async ({
         const storePath = telegramDeps.resolveStorePath(cfg.session?.store, {
           agentId: route.agentId,
         });
+        autoTopicLabelStorePath = storePath;
         const store = (telegramDeps.loadSessionStore ?? loadSessionStore)(storePath, {
           skipCache: true,
         });
@@ -918,6 +963,7 @@ export const dispatchTelegramMessage = async ({
         if (sessionKey) {
           const entry = resolveSessionStoreEntry({ store, sessionKey }).existing;
           isFirstTurnInSession = !entry?.systemSent;
+          autoTopicLabelAttempted = hasTelegramAutoTopicLabelAttempt(entry);
         } else {
           logVerbose("auto-topic-label: SessionKey is absent, skipping first-turn detection");
         }
@@ -1519,8 +1565,9 @@ export const dispatchTelegramMessage = async ({
     return;
   }
 
-  // Fire-and-forget: auto-rename DM topic on first message.
-  if (isDmTopic && isFirstTurnInSession) {
+  // Fire-and-forget: auto-rename DM topic once. Prefer first-turn, but also allow
+  // one retry for existing thread sessions that predate auto-topic labeling.
+  if (isDmTopic && (isFirstTurnInSession || !autoTopicLabelAttempted)) {
     const userMessage = (ctxPayload.RawBody ?? ctxPayload.Body ?? "").slice(0, 500);
     if (userMessage.trim()) {
       const agentDir = resolveAgentDir(cfg, route.agentId);
@@ -1535,27 +1582,42 @@ export const dispatchTelegramMessage = async ({
       );
       if (autoTopicConfig) {
         const topicThreadId = threadSpec.id!;
-        void (async () => {
-          try {
-            const label = await generateTopicLabel({
-              userMessage,
-              prompt: autoTopicConfig.prompt,
-              cfg,
-              agentId: route.agentId,
-              agentDir,
-              model: autoTopicConfig.model,
-            });
-            if (!label) {
-              logVerbose("auto-topic-label: LLM returned empty label");
-              return;
+        const sessionKey = ctxPayload.SessionKey;
+        const marked =
+          sessionKey && autoTopicLabelStorePath
+            ? await markTelegramAutoTopicLabelAttempt({
+                storePath: autoTopicLabelStorePath,
+                sessionKey,
+                threadId: topicThreadId,
+              })
+            : false;
+        if (!sessionKey || !autoTopicLabelStorePath) {
+          logVerbose("auto-topic-label: missing session key/store path, skipping label attempt");
+        } else if (!marked) {
+          logVerbose("auto-topic-label: label already attempted for this topic, skipping");
+        } else {
+          void (async () => {
+            try {
+              const label = await generateTopicLabel({
+                userMessage,
+                prompt: autoTopicConfig.prompt,
+                cfg,
+                agentId: route.agentId,
+                agentDir,
+                model: autoTopicConfig.model,
+              });
+              if (!label) {
+                logVerbose("auto-topic-label: LLM returned empty label");
+                return;
+              }
+              logVerbose(`auto-topic-label: generated label (len=${label.length})`);
+              await bot.api.editForumTopic(chatId, topicThreadId, { name: label });
+              logVerbose(`auto-topic-label: renamed topic ${chatId}/${topicThreadId}`);
+            } catch (err) {
+              logVerbose(`auto-topic-label: failed: ${formatErrorMessage(err)}`);
             }
-            logVerbose(`auto-topic-label: generated label (len=${label.length})`);
-            await bot.api.editForumTopic(chatId, topicThreadId, { name: label });
-            logVerbose(`auto-topic-label: renamed topic ${chatId}/${topicThreadId}`);
-          } catch (err) {
-            logVerbose(`auto-topic-label: failed: ${formatErrorMessage(err)}`);
-          }
-        })();
+          })();
+        }
       }
     }
   }

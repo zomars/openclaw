@@ -1,6 +1,7 @@
 export {
   loadSessionStore,
   resolveSessionStoreEntry,
+  updateSessionStore,
 } from "openclaw/plugin-sdk/session-store-runtime";
 export { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 export { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime";
