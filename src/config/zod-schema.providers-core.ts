@@ -174,6 +174,7 @@ const AutoTopicLabelSchema = z
       .object({
         enabled: z.boolean().optional(),
         prompt: z.string().optional(),
+        model: z.string().optional(),
       })
       .strict(),
   ])

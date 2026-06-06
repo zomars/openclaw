@@ -147,7 +147,7 @@ export const telegramChannelConfigUiHints = {
   },
   autoTopicLabel: {
     label: "Telegram Auto Topic Label",
-    help: "Auto-rename DM forum topics on first message using LLM. Default: true. Set to false to disable, or use object form { enabled: true, prompt: '...' } for custom prompt.",
+    help: "Auto-rename DM forum topics on first message using LLM. Default: true. Set to false to disable, or use object form { enabled: true, prompt: '...', model: 'ds-flash' } for custom prompt/model.",
   },
   "autoTopicLabel.enabled": {
     label: "Telegram Auto Topic Label Enabled",
@@ -156,6 +156,10 @@ export const telegramChannelConfigUiHints = {
   "autoTopicLabel.prompt": {
     label: "Telegram Auto Topic Label Prompt",
     help: "Custom prompt for LLM-based topic naming. The user message is appended after the prompt.",
+  },
+  "autoTopicLabel.model": {
+    label: "Telegram Auto Topic Label Model",
+    help: "Optional model override used only for topic label generation. Omit to use the routed agent default model.",
   },
   "capabilities.inlineButtons": {
     label: "Telegram Inline Buttons",

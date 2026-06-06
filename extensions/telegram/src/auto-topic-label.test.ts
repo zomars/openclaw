@@ -21,10 +21,14 @@ describe("resolveAutoTopicLabelConfig", () => {
   it("prefers direct config over account config", () => {
     expect(resolveAutoTopicLabelConfig(false, true)).toBeNull();
     expect(
-      resolveAutoTopicLabelConfig({ prompt: "DM prompt" }, { prompt: "Account prompt" }),
+      resolveAutoTopicLabelConfig(
+        { prompt: "DM prompt", model: " ds-flash " },
+        { prompt: "Account prompt", model: "haiku" },
+      ),
     ).toEqual({
       enabled: true,
       prompt: "DM prompt",
+      model: "ds-flash",
     });
   });
 
@@ -46,6 +50,7 @@ describe("generateTelegramTopicLabel", () => {
         prompt: "prompt",
         cfg: {},
         agentId: "billing",
+        model: "ds-flash",
       }),
     ).resolves.toBe("Billing");
 
@@ -54,6 +59,7 @@ describe("generateTelegramTopicLabel", () => {
       prompt: "prompt",
       cfg: {},
       agentId: "billing",
+      model: "ds-flash",
       maxLength: 128,
     });
   });

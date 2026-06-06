@@ -6,7 +6,7 @@ export const AUTO_TOPIC_LABEL_DEFAULT_PROMPT =
 export function resolveAutoTopicLabelConfig(
   directConfig?: TelegramDirectConfig["autoTopicLabel"],
   accountConfig?: TelegramAccountConfig["autoTopicLabel"],
-): { enabled: true; prompt: string } | null {
+): { enabled: true; prompt: string; model?: string } | null {
   const config = directConfig ?? accountConfig;
   if (config === undefined || config === true) {
     return { enabled: true, prompt: AUTO_TOPIC_LABEL_DEFAULT_PROMPT };
@@ -14,8 +14,10 @@ export function resolveAutoTopicLabelConfig(
   if (config === false || config.enabled === false) {
     return null;
   }
+  const model = config.model?.trim();
   return {
     enabled: true,
     prompt: config.prompt?.trim() || AUTO_TOPIC_LABEL_DEFAULT_PROMPT,
+    ...(model ? { model } : {}),
   };
 }

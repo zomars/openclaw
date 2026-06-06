@@ -4709,6 +4709,44 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(reactionApi).not.toHaveBeenCalledWith(123, 456, []);
   });
 
+  it("passes auto-topic-label model override to the generator", async () => {
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "Listo" }, { kind: "final" });
+      return { queuedFinal: true };
+    });
+    loadSessionStore.mockReturnValue({});
+    const bot = createBot();
+
+    await dispatchWithContext({
+      bot,
+      context: createContext({
+        ctxPayload: {
+          SessionKey: "s1",
+          RawBody: "Necesito cotizar paneles solares",
+        } as TelegramMessageContext["ctxPayload"],
+      }),
+      telegramCfg: {
+        autoTopicLabel: {
+          enabled: true,
+          model: "ds-flash",
+          prompt: "Short topic only",
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(generateTopicLabel).toHaveBeenCalledWith({
+        userMessage: "Necesito cotizar paneles solares",
+        prompt: "Short topic only",
+        cfg: {},
+        agentId: "default",
+        agentDir: "/tmp/agent",
+        model: "ds-flash",
+      });
+      expect(bot.api.editForumTopic).toHaveBeenCalledWith(123, 777, { name: "Topic label" });
+    });
+  });
+
   it("uses resolved DM config for auto-topic-label overrides", async () => {
     dispatchReplyWithBufferedBlockDispatcher.mockResolvedValue({ queuedFinal: true });
     loadSessionStore.mockReturnValue({ s1: {} });

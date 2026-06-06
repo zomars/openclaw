@@ -1543,6 +1543,7 @@ export const dispatchTelegramMessage = async ({
               cfg,
               agentId: route.agentId,
               agentDir,
+              model: autoTopicConfig.model,
             });
             if (!label) {
               logVerbose("auto-topic-label: LLM returned empty label");
