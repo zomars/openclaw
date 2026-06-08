@@ -93,7 +93,6 @@ import {
 } from "./reasoning-lane-coordinator.js";
 import { editMessageTelegram } from "./send.js";
 import { cacheSticker, describeStickerImage } from "./sticker-cache.js";
-import { getTopicName, resolveTopicNameCachePath, updateTopicName } from "./topic-name-cache.js";
 
 export { pruneStickerMediaFromContext } from "./bot-message-dispatch.media.js";
 
@@ -798,7 +797,6 @@ export const dispatchTelegramMessage = async ({
   let isFirstTurnInSession = false;
   let autoTopicLabelAttempted = false;
   let autoTopicLabelStorePath: string | null = null;
-  let autoTopicLabelTopicNameCachePath: string | null = null;
   let dispatchError: unknown;
 
   try {
@@ -959,12 +957,6 @@ export const dispatchTelegramMessage = async ({
           agentId: route.agentId,
         });
         autoTopicLabelStorePath = storePath;
-        autoTopicLabelTopicNameCachePath = resolveTopicNameCachePath(storePath);
-        const cachedTopicName = getTopicName(
-          chatId,
-          threadSpec.id!,
-          autoTopicLabelTopicNameCachePath,
-        );
         const store = (telegramDeps.loadSessionStore ?? loadSessionStore)(storePath, {
           skipCache: true,
         });
@@ -972,8 +964,7 @@ export const dispatchTelegramMessage = async ({
         if (sessionKey) {
           const entry = resolveSessionStoreEntry({ store, sessionKey }).existing;
           isFirstTurnInSession = !entry?.systemSent;
-          autoTopicLabelAttempted =
-            Boolean(cachedTopicName) || hasTelegramAutoTopicLabelAttempt(entry);
+          autoTopicLabelAttempted = hasTelegramAutoTopicLabelAttempt(entry);
         } else {
           logVerbose("auto-topic-label: SessionKey is absent, skipping first-turn detection");
         }
@@ -1622,14 +1613,6 @@ export const dispatchTelegramMessage = async ({
               }
               logVerbose(`auto-topic-label: generated label (len=${label.length})`);
               await bot.api.editForumTopic(chatId, topicThreadId, { name: label });
-              if (autoTopicLabelTopicNameCachePath) {
-                updateTopicName(
-                  chatId,
-                  topicThreadId,
-                  { name: label },
-                  autoTopicLabelTopicNameCachePath,
-                );
-              }
               await markTelegramAutoTopicLabelAttempt({
                 storePath: autoTopicLabelStorePath,
                 sessionKey,
