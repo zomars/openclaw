@@ -8,7 +8,6 @@ export async function generateTelegramTopicLabel(params: {
   cfg: OpenClawConfig;
   agentId?: string;
   agentDir?: string;
-  model?: string;
 }): Promise<string | null> {
   return await generateConversationLabel({
     ...params,

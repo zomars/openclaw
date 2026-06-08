@@ -290,8 +290,6 @@ export type AutoTopicLabelConfig =
       enabled?: boolean;
       /** Custom prompt for LLM-based topic naming. */
       prompt?: string;
-      /** Optional model override used only for topic label generation. */
-      model?: string;
     };
 
 export type TelegramDirectConfig = {

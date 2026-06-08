@@ -1,10 +1,6 @@
 import { completeSimple, type TextContent } from "@mariozechner/pi-ai";
 import { requireApiKey } from "../../agents/model-auth.js";
-import {
-  buildModelAliasIndex,
-  resolveDefaultModelForAgent,
-  resolveModelRefFromString,
-} from "../../agents/model-selection.js";
+import { resolveDefaultModelForAgent } from "../../agents/model-selection.js";
 import { resolveModelAsync } from "../../agents/pi-embedded-runner/model.js";
 import { prepareModelForSimpleCompletion } from "../../agents/simple-completion-transport.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -20,8 +16,6 @@ export type ConversationLabelParams = {
   cfg: OpenClawConfig;
   agentId?: string;
   agentDir?: string;
-  /** Optional model override for lightweight label generation. Defaults to the routed agent model. */
-  model?: string;
   maxLength?: number;
 };
 
@@ -39,28 +33,7 @@ export async function generateConversationLabel(
     params.maxLength > 0
       ? Math.floor(params.maxLength)
       : DEFAULT_MAX_LABEL_LENGTH;
-  const defaultModelRef = resolveDefaultModelForAgent({ cfg, agentId });
-  const modelOverride = params.model?.trim();
-  const modelRef = (() => {
-    if (!modelOverride) {
-      return defaultModelRef;
-    }
-    const aliasIndex = buildModelAliasIndex({ cfg, defaultProvider: defaultModelRef.provider });
-    const resolvedOverride = resolveModelRefFromString({
-      cfg,
-      raw: modelOverride,
-      defaultProvider: defaultModelRef.provider,
-      aliasIndex,
-    });
-    if (!resolvedOverride) {
-      logVerbose(`conversation-label-generator: failed to resolve override model ${modelOverride}`);
-      return null;
-    }
-    return resolvedOverride.ref;
-  })();
-  if (!modelRef) {
-    return null;
-  }
+  const modelRef = resolveDefaultModelForAgent({ cfg, agentId });
   const resolved = await resolveModelAsync(modelRef.provider, modelRef.model, agentDir, cfg);
   if (!resolved.model) {
     logVerbose(

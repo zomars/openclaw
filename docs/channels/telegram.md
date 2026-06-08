@@ -585,26 +585,6 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
 
     **Thread-bound ACP spawn from chat**: `/acp spawn <agent> --thread here|auto` binds the current topic to a new ACP session; follow-ups route there directly. OpenClaw pins the spawn confirmation in-topic. Requires `channels.telegram.threadBindings.spawnSessions` to remain enabled (default: `true`).
 
-    **Auto topic labels**: DM forum topics auto-rename on the first visible response by default (`autoTopicLabel: true`). Use object form to customize the prompt or use a dedicated lightweight model for labels while keeping the routed agent's default model for the conversation:
-
-    ```json5
-    {
-      channels: {
-        telegram: {
-          accounts: {
-            default: {
-              autoTopicLabel: {
-                enabled: true,
-                model: "ds-flash",
-                prompt: "Generate a very short Telegram topic name. Return only the topic name."
-              }
-            }
-          }
-        }
-      }
-    }
-    ```
-
     Template context exposes `MessageThreadId` and `IsForum`. DM chats with `message_thread_id` keep DM routing and reply metadata on flat sessions by default; they only use thread-aware session keys when configured with `threadReplies: "inbound"`, `threadReplies: "always"`, `requireTopic: true`, or a matching topic config. Use top-level `channels.telegram.dm.threadReplies` for the account default, or `direct.<chatId>.threadReplies` for one DM.
 
   </Accordion>
