@@ -1,0 +1,42 @@
+{
+  "schema": "openclaw-agent-benchmark-result.v1",
+  "date": "YYYY-MM-DD",
+  "task_id": "001-config-schema-diagnosis",
+  "model": "sonnet",
+  "run": 1,
+  "session_key": null,
+  "git": {
+    "base_sha": null,
+    "worktree_path": null,
+    "diff_stat": null
+  },
+  "timing": {
+    "started_at": null,
+    "ended_at": null,
+    "duration_seconds": null
+  },
+  "usage": {
+    "cost_usd": null,
+    "input_tokens": null,
+    "output_tokens": null,
+    "provider_usage_notes": null
+  },
+  "outcome": {
+    "success": null,
+    "verify_passed": null,
+    "score_0_10": null,
+    "human_interventions": 0
+  },
+  "quality": {
+    "tool_discipline_0_5": null,
+    "patch_quality_0_5": null,
+    "reasoning_quality_0_5": null,
+    "guardrail_compliance_0_5": null
+  },
+  "artifacts": {
+    "transcript_path": null,
+    "diff_path": null,
+    "verify_log_path": null
+  },
+  "notes": []
+}
