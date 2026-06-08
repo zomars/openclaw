@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import type { Bot } from "grammy";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,7 @@ import {
   createTestDraftStream,
 } from "./draft-stream.test-helpers.js";
 import { renderTelegramHtmlText } from "./format.js";
+import { resetTopicNameCacheForTest, updateTopicName } from "./topic-name-cache.js";
 
 type DispatchReplyWithBufferedBlockDispatcherArgs = Parameters<
   TelegramBotDeps["dispatchReplyWithBufferedBlockDispatcher"]
@@ -172,6 +174,8 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
   beforeEach(() => {
     resetTelegramReplyFenceForTests();
+    resetTopicNameCacheForTest();
+    fs.rmSync("/tmp/sessions.json.telegram-topic-names.json", { force: true });
     createTelegramDraftStream.mockReset();
     dispatchReplyWithBufferedBlockDispatcher.mockReset();
     deliverReplies.mockReset();
@@ -4780,6 +4784,35 @@ describe("dispatchTelegramMessage draft streaming", () => {
       );
       expect(bot.api.editForumTopic).toHaveBeenCalledWith(123, 777, { name: "Topic label" });
     });
+  });
+
+  it("skips auto-topic-label when a DM topic name is already cached", async () => {
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver({ text: "Listo" }, { kind: "final" });
+      return { queuedFinal: true };
+    });
+    loadSessionStore.mockReturnValue({ s1: { systemSent: true } });
+    updateTopicName(
+      123,
+      777,
+      { name: "Existing topic" },
+      "/tmp/sessions.json.telegram-topic-names.json",
+    );
+    const bot = createBot();
+
+    await dispatchWithContext({
+      bot,
+      context: createContext({
+        ctxPayload: {
+          SessionKey: "s1",
+          RawBody: "No renombres otra vez",
+        } as TelegramMessageContext["ctxPayload"],
+      }),
+      telegramCfg: { autoTopicLabel: { enabled: true, model: "ds-flash" } },
+    });
+
+    expect(generateTopicLabel).not.toHaveBeenCalled();
+    expect(bot.api.editForumTopic).not.toHaveBeenCalled();
   });
 
   it("uses resolved DM config for auto-topic-label overrides", async () => {
