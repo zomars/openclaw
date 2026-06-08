@@ -33,6 +33,9 @@ export interface ParseAndQuoteResult {
 export interface ParseAndQuoteError {
   success: false;
   error: string;
+  requestId?: string;
+  code?: string;
+  stage?: string;
 }
 
 export interface EditQuoteInput {
@@ -64,6 +67,61 @@ export interface EditQuoteResult {
   quote?: ParseAndQuoteResult["quote"];
 }
 
+export interface PreviousQuoteMatch {
+  quoteId?: string;
+  quoteNumber?: string;
+  version?: number;
+  parentQuoteNumber?: string | null;
+  clientName?: string;
+  clientPhone?: string;
+  city?: string;
+  serviceNumber?: string;
+  rpu?: string;
+  coworkerPhone?: string;
+  panels?: number;
+  totalInvestment?: number;
+  createdAt?: string;
+  confidence?: number;
+  matchReason?: string;
+  pdf?: {
+    storagePath?: string;
+    url?: string;
+    expiresAt?: string;
+  };
+}
+
+export interface PreviousQuoteSearchInput {
+  query: string;
+  coworkerPhone: string;
+  limit?: number;
+}
+
+export interface PreviousQuoteSearchResult {
+  success: boolean;
+  matches: PreviousQuoteMatch[];
+  needsClarification: boolean;
+  suggestion?: "send" | "disambiguate" | "ask_more" | "not_found";
+  hint?: string;
+  error?: string;
+}
+
+export interface PreviousQuoteSendPdfInput {
+  coworkerPhone: string;
+  quoteNumber?: string;
+  quoteId?: string;
+  version?: number;
+}
+
+export interface PreviousQuoteSendPdfResult {
+  success: boolean;
+  quoteId?: string;
+  quoteNumber?: string;
+  version?: number;
+  pdfUrl?: string;
+  expiresAt?: string;
+  error?: string;
+}
+
 export interface ParseAndQuoteClient {
   quote(input: {
     mediaPath: string;
@@ -72,11 +130,20 @@ export interface ParseAndQuoteClient {
   editQuote(input: EditQuoteInput): Promise<EditQuoteResult | ParseAndQuoteError>;
 }
 
+export interface PreviousQuoteClient {
+  searchQuotes(input: PreviousQuoteSearchInput): Promise<PreviousQuoteSearchResult>;
+  sendQuotePdf(input: PreviousQuoteSendPdfInput): Promise<PreviousQuoteSendPdfResult>;
+}
+
 export interface ClientDeps {
   apiKey: string;
   apiUrl: string;
   /** Synchronous quote-revision endpoint (calculate-quote). */
   editQuoteUrl: string;
+  /** Previous quote fuzzy search endpoint. */
+  searchQuotesUrl: string;
+  /** Previous quote signed-PDF endpoint. */
+  sendQuotePdfUrl: string;
   /** Polling interval in ms (default 2500) */
   pollIntervalMs?: number;
   /** Total timeout in ms (default 120000) */
@@ -177,7 +244,50 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
   };
 }
 
-export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient {
+function bool(v: unknown): boolean | undefined {
+  return typeof v === "boolean" ? v : undefined;
+}
+
+function normalizeMatch(raw: unknown): PreviousQuoteMatch {
+  const m = (raw ?? {}) as Record<string, unknown>;
+  const pdf = (m.pdf ?? {}) as Record<string, unknown>;
+  const out: PreviousQuoteMatch = {
+    quoteId: str(m.quoteId ?? m.quote_id),
+    quoteNumber: str(m.quoteNumber ?? m.quote_number),
+    clientName: str(m.clientName ?? m.client_name),
+    clientPhone: str(m.clientPhone ?? m.client_phone),
+    city: str(m.city),
+    serviceNumber: str(m.serviceNumber ?? m.service_number),
+    rpu: str(m.rpu),
+    coworkerPhone: str(m.coworkerPhone ?? m.coworker_phone),
+    parentQuoteNumber: str(m.parentQuoteNumber ?? m.parent_quote_number) ?? null,
+    createdAt: str(m.createdAt ?? m.created_at),
+    matchReason: str(m.matchReason ?? m.match_reason),
+  };
+  const version = num(m.version);
+  const panels = num(m.panels);
+  const totalInvestment = num(m.totalInvestment ?? m.total_investment);
+  const confidence = num(m.confidence ?? m.score);
+  if (Number.isFinite(version)) out.version = version;
+  if (Number.isFinite(panels)) out.panels = panels;
+  if (Number.isFinite(totalInvestment)) out.totalInvestment = totalInvestment;
+  if (Number.isFinite(confidence)) out.confidence = confidence;
+  const pdfUrl = str(pdf.url ?? m.pdfUrl ?? m.pdf_url);
+  const storagePath = str(pdf.storagePath ?? pdf.storage_path ?? m.storagePath ?? m.storage_path);
+  const expiresAt = str(pdf.expiresAt ?? pdf.expires_at ?? m.expiresAt ?? m.expires_at);
+  if (pdfUrl || storagePath || expiresAt) {
+    out.pdf = {
+      ...(storagePath ? { storagePath } : {}),
+      ...(pdfUrl ? { url: pdfUrl } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    };
+  }
+  return out;
+}
+
+export function createParseAndQuoteClient(
+  deps: ClientDeps,
+): ParseAndQuoteClient & PreviousQuoteClient {
   const pollInterval = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const timeout = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const base = baseUrl(deps.apiUrl);
@@ -306,10 +416,12 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
 
         if (status === "error") {
           const errObj = pollJson.error as Record<string, unknown> | undefined;
+          const code = errObj ? str(errObj.code) : undefined;
+          const stage = str(pollJson.stage) ?? (errObj ? str(errObj.stage) : undefined);
           const errMsg = errObj
-            ? (str(errObj.message) ?? str(errObj.code) ?? "unknown error")
+            ? (str(errObj.message) ?? code ?? "unknown error")
             : "parse-and-quote failed";
-          return { success: false, error: errMsg };
+          return { success: false, error: errMsg, requestId, code, stage };
         }
 
         // queued or processing — continue polling
@@ -318,6 +430,9 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
       return {
         success: false,
         error: `timeout: requestId=${requestId} did not complete in ${timeout}ms`,
+        requestId,
+        code: "TIMEOUT",
+        stage: "poll",
       };
     },
 
@@ -426,6 +541,142 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
         ...(parentQuoteId ? { parentQuoteId } : {}),
         pdfUrl,
         ...(quote ? { quote } : {}),
+      };
+    },
+
+    async searchQuotes(input) {
+      if (!input.query || !input.coworkerPhone) {
+        return {
+          success: false,
+          error: "query and coworkerPhone are required",
+          matches: [],
+          needsClarification: false,
+          suggestion: "ask_more",
+        };
+      }
+      let response: Response;
+      try {
+        response = await fetch(deps.searchQuotesUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": deps.apiKey,
+          },
+          body: JSON.stringify({
+            query: input.query,
+            requester_phone: input.coworkerPhone,
+            coworkerPhone: input.coworkerPhone,
+            limit: input.limit ?? 5,
+          }),
+        });
+      } catch (err) {
+        return {
+          success: false,
+          error: `network error: ${String(err)}`,
+          matches: [],
+          needsClarification: false,
+          suggestion: "ask_more",
+        };
+      }
+      if (!response.ok) {
+        let text = "";
+        try {
+          text = await response.text();
+        } catch {
+          // ignore
+        }
+        return {
+          success: false,
+          error: `HTTP ${response.status}: ${text.slice(0, 500)}`,
+          matches: [],
+          needsClarification: false,
+          suggestion: response.status === 404 ? "not_found" : "ask_more",
+        };
+      }
+      let json: Record<string, unknown>;
+      try {
+        json = (await response.json()) as Record<string, unknown>;
+      } catch (err) {
+        return {
+          success: false,
+          error: `invalid JSON: ${String(err)}`,
+          matches: [],
+          needsClarification: false,
+          suggestion: "ask_more",
+        };
+      }
+      const matches = Array.isArray(json.matches) ? json.matches.map(normalizeMatch) : [];
+      const rawSuggestion = str(json.suggestion);
+      const allowed = ["send", "disambiguate", "ask_more", "not_found"];
+      const suggestion = allowed.includes(rawSuggestion ?? "")
+        ? (rawSuggestion as PreviousQuoteSearchResult["suggestion"])
+        : undefined;
+      return {
+        success: bool(json.success) ?? true,
+        matches,
+        needsClarification:
+          bool(json.needsClarification ?? json.needs_clarification) ??
+          suggestion === "disambiguate",
+        ...(suggestion ? { suggestion } : {}),
+        ...(str(json.hint) ? { hint: str(json.hint) } : {}),
+        ...(str(json.error) ? { error: str(json.error) } : {}),
+      };
+    },
+
+    async sendQuotePdf(input) {
+      if (!input.coworkerPhone || (!input.quoteNumber && !input.quoteId)) {
+        return { success: false, error: "coworkerPhone and quoteNumber or quoteId are required" };
+      }
+      const body: Record<string, unknown> = {
+        requester_phone: input.coworkerPhone,
+        coworkerPhone: input.coworkerPhone,
+      };
+      if (input.quoteNumber) body.quoteNumber = input.quoteNumber;
+      if (input.quoteId) body.quoteId = input.quoteId;
+      if (typeof input.version === "number") body.version = input.version;
+
+      let response: Response;
+      try {
+        response = await fetch(deps.sendQuotePdfUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": deps.apiKey,
+          },
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        return { success: false, error: `network error: ${String(err)}` };
+      }
+      if (!response.ok) {
+        let text = "";
+        try {
+          text = await response.text();
+        } catch {
+          // ignore
+        }
+        return { success: false, error: `HTTP ${response.status}: ${text.slice(0, 500)}` };
+      }
+      let json: Record<string, unknown>;
+      try {
+        json = (await response.json()) as Record<string, unknown>;
+      } catch (err) {
+        return { success: false, error: `invalid JSON: ${String(err)}` };
+      }
+      const pdfUrl = str(json.pdfUrl ?? json.pdf_url ?? json.url);
+      if (!pdfUrl) {
+        return { success: false, error: "send-quote-pdf response missing pdfUrl" };
+      }
+      const version = num(json.version);
+      return {
+        success: bool(json.success) ?? true,
+        quoteId: str(json.quoteId ?? json.quote_id) ?? input.quoteId,
+        quoteNumber: str(json.quoteNumber ?? json.quote_number) ?? input.quoteNumber,
+        ...(Number.isFinite(version) ? { version } : {}),
+        pdfUrl,
+        ...(str(json.expiresAt ?? json.expires_at)
+          ? { expiresAt: str(json.expiresAt ?? json.expires_at) }
+          : {}),
       };
     },
   };

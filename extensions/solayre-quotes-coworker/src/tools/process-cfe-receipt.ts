@@ -61,6 +61,39 @@ export interface ProcessCFEReceiptResult {
   error?: string;
 }
 
+function buildAlert(params: {
+  stage: string;
+  clientPhone: string;
+  coworkerPhone?: string;
+  mediaPath: string;
+  error: unknown;
+  requestId?: string;
+  code?: string;
+}): string {
+  const lines = [
+    "🚨 Solayre coworker quote failed",
+    `Stage: ${params.stage}`,
+    `Client: ${params.clientPhone}`,
+    ...(params.coworkerPhone ? [`Coworker: ${params.coworkerPhone}`] : []),
+    `Media: ${path.basename(params.mediaPath)}`,
+    ...(params.code ? [`Code: ${params.code}`] : []),
+    ...(params.requestId ? [`Request: ${params.requestId}`] : []),
+    `Error: ${params.error instanceof Error ? params.error.message : String(params.error)}`,
+  ];
+  return lines.join("\n");
+}
+
+async function alertFailure(
+  runtime: Runtime,
+  params: Parameters<typeof buildAlert>[0],
+): Promise<void> {
+  try {
+    await runtime.sendAlert?.(buildAlert(params));
+  } catch (err) {
+    console.warn("[solayre-quotes-coworker] alert failed:", err);
+  }
+}
+
 function buildSummary(result: ParseAndQuoteResult): string {
   const { quote, cfe } = result;
   const customer = cfe?.data?.customerName ?? "el cliente";
@@ -115,10 +148,27 @@ export const processCFEReceiptCoworkerTool = {
       parsed = await parseAndQuote({ mediaPath, phoneNumber: clientPhone });
     } catch (err) {
       console.error("[solayre-quotes-coworker] parseAndQuote threw:", err);
+      await alertFailure(runtime, {
+        stage: "parseAndQuote:throw",
+        clientPhone,
+        coworkerPhone,
+        mediaPath,
+        error: err,
+      });
       return { success: false, error: ERR_INTERNAL };
     }
 
     if (!parsed.success) {
+      console.error("[solayre-quotes-coworker] parseAndQuote failed:", parsed);
+      await alertFailure(runtime, {
+        stage: parsed.stage ?? "parseAndQuote:error",
+        clientPhone,
+        coworkerPhone,
+        mediaPath,
+        error: parsed.error,
+        requestId: parsed.requestId,
+        code: parsed.code,
+      });
       return { success: false, error: parsed.error };
     }
 
@@ -127,6 +177,13 @@ export const processCFEReceiptCoworkerTool = {
       await downloadFile(parsed.pdfUrl, destPath);
     } catch (err) {
       console.error("[solayre-quotes-coworker] downloadFile failed:", err);
+      await alertFailure(runtime, {
+        stage: "downloadFile",
+        clientPhone,
+        coworkerPhone,
+        mediaPath,
+        error: err,
+      });
       return {
         success: false,
         quoteId: parsed.quoteId,
@@ -147,6 +204,13 @@ export const processCFEReceiptCoworkerTool = {
       });
     } catch (err) {
       console.error("[solayre-quotes-coworker] delivery failed:", err);
+      await alertFailure(runtime, {
+        stage: "delivery",
+        clientPhone,
+        coworkerPhone,
+        mediaPath,
+        error: err,
+      });
       return {
         success: false,
         quoteId: parsed.quoteId,

@@ -3,4 +3,5 @@ export interface Runtime {
     to: string,
     content: { text: string; metadata?: Record<string, unknown> },
   ): Promise<void>;
+  sendAlert?(text: string): Promise<void>;
 }

@@ -15,6 +15,10 @@ import { SolayreQuotesCoworkerConfigSchema } from "./src/config/schema.js";
 import { createDownloader } from "./src/download.js";
 import type { Runtime } from "./src/runtime.js";
 import { editQuoteCoworkerTool } from "./src/tools/edit-quote.js";
+import {
+  searchPreviousQuotesCoworkerTool,
+  sendPreviousQuotePdfCoworkerTool,
+} from "./src/tools/previous-quote.js";
 import { processCFEReceiptCoworkerTool } from "./src/tools/process-cfe-receipt.js";
 
 const plugin = {
@@ -64,7 +68,28 @@ const plugin = {
           });
         } catch (err) {
           console.error("[solayre-quotes-coworker] sendMessage failed:", err);
+          throw err;
         }
+      },
+      async sendAlert(text) {
+        if (!config.alertTelegramChatId) {
+          return;
+        }
+        const adapter = await api.runtime.channel.outbound.loadAdapter("telegram");
+        if (!adapter?.sendText) {
+          console.warn("[solayre-quotes-coworker] telegram alert adapter unavailable");
+          return;
+        }
+        const cfg = (api.runtime.config?.current?.() ?? api.config) as typeof api.config;
+        await adapter.sendText({
+          cfg,
+          to: config.alertTelegramChatId,
+          text,
+          ...(config.alertTelegramAccountId ? { accountId: config.alertTelegramAccountId } : {}),
+          ...(config.alertTelegramThreadId != null
+            ? { threadId: config.alertTelegramThreadId }
+            : {}),
+        });
       },
     };
 
@@ -72,6 +97,9 @@ const plugin = {
       apiKey,
       apiUrl: config.parseAndQuoteUrl,
       editQuoteUrl: config.editQuoteUrl,
+      searchQuotesUrl: config.searchQuotesUrl,
+      sendQuotePdfUrl: config.sendQuotePdfUrl,
+      timeoutMs: config.parseAndQuoteTimeoutMs,
     });
     const downloadFile = createDownloader({ apiKey });
 
@@ -109,6 +137,20 @@ const plugin = {
     });
     registerTool("Edit Quote (Coworker)", editQuoteCoworkerTool, {
       editQuote: (input) => parseAndQuoteClient.editQuote(input),
+      downloadFile,
+      runtime,
+      outputDir,
+    });
+    registerTool("Search Previous Quotes (Coworker)", searchPreviousQuotesCoworkerTool, {
+      searchQuotes: (input) => parseAndQuoteClient.searchQuotes(input),
+      sendQuotePdf: (input) => parseAndQuoteClient.sendQuotePdf(input),
+      downloadFile,
+      runtime,
+      outputDir,
+    });
+    registerTool("Send Previous Quote PDF (Coworker)", sendPreviousQuotePdfCoworkerTool, {
+      searchQuotes: (input) => parseAndQuoteClient.searchQuotes(input),
+      sendQuotePdf: (input) => parseAndQuoteClient.sendQuotePdf(input),
       downloadFile,
       runtime,
       outputDir,

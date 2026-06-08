@@ -6,7 +6,12 @@
   "author": "OpenClaw",
   "license": "MIT",
   "contracts": {
-    "tools": ["solayre_quotes_coworker__process_cfe_receipt", "solayre_quotes_coworker__edit_quote"]
+    "tools": [
+      "solayre_quotes_coworker__process_cfe_receipt",
+      "solayre_quotes_coworker__edit_quote",
+      "solayre_quotes_coworker__search_previous_quotes",
+      "solayre_quotes_coworker__send_previous_quote_pdf"
+    ]
   },
   "configSchema": {
     "type": "object",
@@ -26,9 +31,33 @@
         "type": "string",
         "description": "Supabase synchronous quote-revision endpoint."
       },
+      "searchQuotesUrl": {
+        "type": "string",
+        "description": "Supabase previous-quote fuzzy search endpoint."
+      },
+      "sendQuotePdfUrl": {
+        "type": "string",
+        "description": "Supabase previous-quote signed-PDF endpoint."
+      },
+      "parseAndQuoteTimeoutMs": {
+        "type": "number",
+        "description": "Total parse-and-quote polling timeout in ms. Keep below MCP/tool timeout so failures can alert cleanly."
+      },
       "mediaDir": {
         "type": "string",
         "description": "Directory where downloaded quote PDFs are staged before delivery."
+      },
+      "alertTelegramChatId": {
+        "type": "string",
+        "description": "Telegram chat ID to receive internal failure alerts."
+      },
+      "alertTelegramThreadId": {
+        "oneOf": [{ "type": "string" }, { "type": "number" }],
+        "description": "Optional Telegram topic/thread ID for failure alerts."
+      },
+      "alertTelegramAccountId": {
+        "type": "string",
+        "description": "Optional Telegram account ID for failure alerts."
       }
     }
   }
