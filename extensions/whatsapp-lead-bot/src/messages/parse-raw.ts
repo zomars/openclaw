@@ -6,6 +6,10 @@ import type { StoredMessage } from "../database/schema.js";
  */
 export function parseRawMessage(rawMsg: {
   key?: { id?: string; remoteJid?: string; fromMe?: boolean; participant?: string };
+  pushName?: string | null;
+  senderName?: string | null;
+  notifyName?: string | null;
+  verifiedBizName?: string | null;
   messageTimestamp?: number | Long;
   message?: Record<string, unknown>;
 }): StoredMessage | null {
@@ -39,6 +43,9 @@ export function parseRawMessage(rawMsg: {
     id: msgId,
     chat_jid: remoteJid,
     sender_jid: participant,
+    sender_name: normalizeName(
+      rawMsg.pushName ?? rawMsg.senderName ?? rawMsg.notifyName ?? rawMsg.verifiedBizName,
+    ),
     from_me: fromMe,
     timestamp: ts,
     content,
@@ -63,9 +70,7 @@ function extractReaction(msg: Record<string, unknown> | undefined): {
   if (!msg) {
     return { emoji: null, targetId: null };
   }
-  const r = msg.reactionMessage as
-    | { text?: string; key?: { id?: string } }
-    | undefined;
+  const r = msg.reactionMessage as { text?: string; key?: { id?: string } } | undefined;
   if (!r) {
     return { emoji: null, targetId: null };
   }
@@ -164,3 +169,9 @@ function extractTextContent(msg: Record<string, unknown> | undefined): string | 
 }
 
 type Long = { low: number; high: number; unsigned: boolean };
+
+function normalizeName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}

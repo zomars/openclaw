@@ -128,6 +128,7 @@ export interface StoredMessage {
   id: string;
   chat_jid: string;
   sender_jid: string | null;
+  sender_name?: string | null;
   from_me: number; // 0 or 1
   timestamp: number; // epoch seconds
   content: string | null;
@@ -149,6 +150,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   chat_jid TEXT NOT NULL,
   sender_jid TEXT,
+  sender_name TEXT,
   from_me INTEGER NOT NULL,
   timestamp INTEGER NOT NULL,
   content TEXT,
@@ -198,7 +200,11 @@ ALTER TABLE leads ADD COLUMN survey_sent_at INTEGER;
 ALTER TABLE leads ADD COLUMN instagram_reminder_sent_at INTEGER;
 `;
 
-export const SCHEMA_VERSION = 12;
+export const MIGRATE_V12_TO_V13_DDL = `
+ALTER TABLE messages ADD COLUMN sender_name TEXT;
+`;
+
+export const SCHEMA_VERSION = 13;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking

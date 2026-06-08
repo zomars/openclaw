@@ -34,6 +34,7 @@ import {
   MIGRATE_V9_TO_V10_DDL,
   MIGRATE_V10_TO_V11_DDL,
   MIGRATE_V11_TO_V12_DDL,
+  MIGRATE_V12_TO_V13_DDL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -180,6 +181,21 @@ export class SqliteDatabase implements DatabaseInterface {
       if (versionRow.version < 12) {
         // v11→v12: follow-up tracking columns on leads
         for (const stmt of MIGRATE_V11_TO_V12_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
+      }
+      if (versionRow.version < 13) {
+        // v12→v13: persist WhatsApp sender display name from raw metadata.
+        for (const stmt of MIGRATE_V12_TO_V13_DDL.split(";")) {
           const trimmed = stmt.trim();
           if (trimmed) {
             try {
@@ -917,8 +933,8 @@ export class SqliteDatabase implements DatabaseInterface {
   private _insertMessageStmt?: ReturnType<Database.Database["prepare"]>;
   private get insertMessageStmt() {
     return (this._insertMessageStmt ??= this.db.prepare(
-      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, from_me, timestamp, content, message_type, media_type, media_filename, media_size, media_path, reaction_emoji, reaction_target_id, revoked_target_id, edited_from_id, peer_e164, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, sender_name, from_me, timestamp, content, message_type, media_type, media_filename, media_size, media_path, reaction_emoji, reaction_target_id, revoked_target_id, edited_from_id, peer_e164, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ));
   }
 
@@ -927,6 +943,7 @@ export class SqliteDatabase implements DatabaseInterface {
       msg.id,
       msg.chat_jid,
       msg.sender_jid,
+      msg.sender_name ?? null,
       msg.from_me,
       msg.timestamp,
       msg.content,

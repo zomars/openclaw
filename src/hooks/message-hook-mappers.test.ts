@@ -215,6 +215,8 @@ describe("message hook mappers", () => {
         messageId: "msg-1",
         senderName: "User One",
         threadId: 42,
+        mediaPath: "/tmp/audio.ogg",
+        mediaType: "audio/ogg",
         topicName: "Deployments",
       }),
     });

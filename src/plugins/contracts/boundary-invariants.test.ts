@@ -12,6 +12,7 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_FILES = [
   "extensions/acpx/index.ts",
   "extensions/active-memory/index.ts",
   "extensions/codex/index.ts",
+  "extensions/conversation-ingest/index.ts",
   "extensions/diffs/src/plugin.ts",
   "extensions/discord/subagent-hooks-api.ts",
   "extensions/feishu/subagent-hooks-api.ts",
@@ -20,11 +21,14 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_FILES = [
   "extensions/memory-lancedb/index.ts",
   "extensions/skill-workshop/index.ts",
   "extensions/thread-ownership/index.ts",
+  "extensions/whatsapp-lead-bot/index.ts",
+  "extensions/whatsapp-lead-bot/src/context.ts",
 ] as const;
 const BUNDLED_TYPED_HOOK_REGISTRATION_GUARDS = {
   "extensions/acpx/index.ts": ["reply_dispatch"],
   "extensions/active-memory/index.ts": ["before_prompt_build"],
   "extensions/codex/index.ts": ["inbound_claim"],
+  "extensions/conversation-ingest/index.ts": ["message_received"],
   "extensions/diffs/src/plugin.ts": ["before_prompt_build"],
   "extensions/discord/subagent-hooks-api.ts": [
     "subagent_delivery_target",
@@ -45,6 +49,15 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_GUARDS = {
   "extensions/memory-lancedb/index.ts": ["agent_end", "before_prompt_build", "session_end"],
   "extensions/skill-workshop/index.ts": ["agent_end", "before_prompt_build"],
   "extensions/thread-ownership/index.ts": ["message_received", "message_sending"],
+  "extensions/whatsapp-lead-bot/index.ts": [
+    "before_prompt_build",
+    "before_tool_call",
+    "before_tool_call",
+    "message_received",
+    "message_sending",
+    "message_sent",
+  ],
+  "extensions/whatsapp-lead-bot/src/context.ts": ["message_received"],
 } as const satisfies Record<
   (typeof BUNDLED_TYPED_HOOK_REGISTRATION_FILES)[number],
   readonly string[]

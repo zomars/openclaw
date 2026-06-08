@@ -1,0 +1,17 @@
+{
+  "id": "conversation-ingest",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": false,
+  "name": "Conversation Ingest",
+  "description": "Passively archives channel messages from existing OpenClaw message hooks and exposes retrieval tools.",
+  "contracts": {
+    "tools": ["search_ingested_messages"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
