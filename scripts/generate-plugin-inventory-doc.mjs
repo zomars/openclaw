@@ -95,13 +95,13 @@ search_ingested_messages
 
 Parameters:
 
-| Parameter | Type | Description |
-| --- | --- | --- |
-| \`query\` | string | Text search. Omit to return recent messages matching filters. |
-| \`chat\` | string | Conversation/chat id, sender id, recipient id, or session key substring. |
-| \`account\` | string | Channel account id, for example \`default\` or \`solayre\`. |
-| \`channel\` | string | Channel id, for example \`whatsapp\`, \`telegram\`, or \`slack\`. |
-| \`limit\` | number | Max results. Defaults to \`20\`; capped at \`100\`. |
+| Parameter | Type   | Description                                                              |
+| --------- | ------ | ------------------------------------------------------------------------ |
+| \`query\`   | string | Text search. Omit to return recent messages matching filters.            |
+| \`chat\`    | string | Conversation/chat id, sender id, recipient id, or session key substring. |
+| \`account\` | string | Channel account id, for example \`default\` or \`solayre\`.                  |
+| \`channel\` | string | Channel id, for example \`whatsapp\`, \`telegram\`, or \`slack\`.              |
+| \`limit\`   | number | Max results. Defaults to \`20\`; capped at \`100\`.                          |
 
 Example input:
 
