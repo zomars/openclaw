@@ -123,11 +123,10 @@ async function markTelegramAutoTopicLabelAttempt(params: {
   storePath: string;
   sessionKey: string;
   threadId: number;
-  force?: boolean;
 }): Promise<boolean> {
   return await updateSessionStore(params.storePath, (store) => {
     const entry = store[params.sessionKey];
-    if (!entry || (!params.force && hasTelegramAutoTopicLabelAttempt(entry))) {
+    if (!entry || hasTelegramAutoTopicLabelAttempt(entry)) {
       return false;
     }
     entry.pluginExtensions = {
@@ -1613,12 +1612,6 @@ export const dispatchTelegramMessage = async ({
               }
               logVerbose(`auto-topic-label: generated label (len=${label.length})`);
               await bot.api.editForumTopic(chatId, topicThreadId, { name: label });
-              await markTelegramAutoTopicLabelAttempt({
-                storePath: autoTopicLabelStorePath,
-                sessionKey,
-                threadId: topicThreadId,
-                force: true,
-              });
               logVerbose(`auto-topic-label: renamed topic ${chatId}/${topicThreadId}`);
             } catch (err) {
               logVerbose(`auto-topic-label: failed: ${formatErrorMessage(err)}`);
