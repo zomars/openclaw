@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { telegramPlugin } from "./channel.js";
 
 describe("telegram session route", () => {
-  it("keeps direct topic thread ids in a thread session suffix", async () => {
+  it("scopes direct topic thread session ids with chat id to match inbound routing", async () => {
     const route = await telegramPlugin.messaging?.resolveOutboundSessionRoute?.({
       cfg: {},
       agentId: "main",
@@ -10,9 +10,25 @@ describe("telegram session route", () => {
     });
 
     expect(route).toMatchObject({
-      sessionKey: "agent:main:main:thread:99",
+      sessionKey: "agent:main:main:thread:12345:99",
       baseSessionKey: "agent:main:main",
-      threadId: 99,
+      threadId: "12345:99",
+    });
+  });
+
+  it("matches inbound direct topic session keys when DM scope includes the Telegram peer", async () => {
+    const route = await telegramPlugin.messaging?.resolveOutboundSessionRoute?.({
+      cfg: { session: { dmScope: "per-account-channel-peer" } },
+      agentId: "main",
+      accountId: "default",
+      target: "12345:topic:99",
+    });
+
+    expect(route).toMatchObject({
+      sessionKey: "agent:main:telegram:default:direct:12345:thread:12345:99",
+      baseSessionKey: "agent:main:telegram:default:direct:12345",
+      threadId: "12345:99",
+      from: "telegram:12345:topic:99",
     });
   });
 

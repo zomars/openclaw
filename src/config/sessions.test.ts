@@ -587,6 +587,27 @@ describe("sessions", () => {
     expect(store["agent:main:new"]?.sessionId).toBe("sess-new");
   });
 
+  it("loadSessionStore auto-migrates legacy bare Telegram DM topic session keys", async () => {
+    const legacyKey = "agent:default:telegram:default:direct:1324919825:thread:27302";
+    const canonicalKey = "agent:default:telegram:default:direct:1324919825:thread:1324919825:27302";
+    const { storePath } = await createSessionStoreFixture({
+      prefix: "loadSessionStore-telegram-dm-topic-key",
+      entries: {
+        [legacyKey]: {
+          sessionId: "sess-telegram-topic",
+          updatedAt: 123,
+          lastChannel: "telegram",
+          lastTo: "telegram:1324919825",
+          lastThreadId: 27302,
+        },
+      },
+    });
+
+    const store = loadSessionStore(storePath);
+    expect(store[legacyKey]).toBeUndefined();
+    expect(store[canonicalKey]?.sessionId).toBe("sess-telegram-topic");
+  });
+
   it("loadSessionStore auto-migrates legacy provider keys to channel keys", async () => {
     const mainSessionKey = "agent:main:main";
     const dir = await createCaseDir("loadSessionStore");

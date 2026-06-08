@@ -461,6 +461,17 @@ function shouldStripTelegramThreadFromAnnounceOrigin(params: {
   return entryTarget.to !== requesterTarget.to;
 }
 
+function buildTelegramDirectTopicSessionThreadId(params: {
+  chatId: string;
+  threadId?: string | number | null;
+}): string | undefined {
+  const topicId = parseTelegramThreadId(params.threadId);
+  if (topicId === undefined) {
+    return undefined;
+  }
+  return `${params.chatId}:${topicId}`;
+}
+
 function resolveTelegramOutboundSessionRoute(params: {
   cfg: OpenClawConfig;
   agentId: string;
@@ -508,17 +519,19 @@ function resolveTelegramOutboundSessionRoute(params: {
   }
   const route = buildThreadAwareOutboundSessionRoute({
     route: baseRoute,
-    threadId: resolvedThreadId,
+    threadId: buildTelegramDirectTopicSessionThreadId({ chatId, threadId: resolvedThreadId }),
     currentSessionKey: params.currentSessionKey,
     precedence: ["threadId", "currentSession"],
     canRecoverCurrentThread: ({ route }) =>
       route.chatType !== "direct" || (params.cfg.session?.dmScope ?? "main") !== "main",
   });
+  const sendThreadId = parseTelegramThreadId(route.threadId);
   return {
     ...route,
+    ...(sendThreadId !== undefined ? { threadId: route.threadId } : {}),
     from:
-      route.threadId !== undefined
-        ? `telegram:${chatId}:topic:${route.threadId}`
+      sendThreadId !== undefined
+        ? `telegram:${chatId}:topic:${sendThreadId}`
         : `telegram:${chatId}`,
   };
 }
