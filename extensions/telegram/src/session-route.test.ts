@@ -13,7 +13,7 @@ describe("telegram session route", () => {
     expect(route).toMatchObject({
       sessionKey: "agent:main:main:thread:12345:99",
       baseSessionKey: "agent:main:main",
-      threadId: "12345:99",
+      threadId: 99,
     });
   });
 
@@ -28,7 +28,7 @@ describe("telegram session route", () => {
     expect(route).toMatchObject({
       sessionKey: "agent:main:telegram:default:direct:12345:thread:12345:99",
       baseSessionKey: "agent:main:telegram:default:direct:12345",
-      threadId: "12345:99",
+      threadId: 99,
       from: "telegram:12345:topic:99",
     });
   });

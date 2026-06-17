@@ -68,12 +68,6 @@ vi.mock("../screenshot.js", () => ({
   })),
 }));
 
-vi.mock("../artifacts.js", () => ({
-  saveBrowserScreenshotArtifact: vi.fn(async () => ({
-    path: "/tmp/openclaw/artifacts/fake.png",
-  })),
-}));
-
 vi.mock("../../media/store.js", () => ({
   ensureMediaDir: vi.fn(async () => {}),
   saveMediaBuffer: vi.fn(async () => ({ path: "/tmp/fake.png" })),
