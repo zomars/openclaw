@@ -1,8 +1,12 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+// Boundary invariant tests cover plugin boundary rules that must hold across the repo.
+import { spawnSync } from "node:child_process";
+import fs, { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+import { expectNoReaddirSyncDuring } from "../../test-utils/fs-scan-assertions.js";
+import { listGitTrackedFiles, toRepoRelativePath } from "../../test-utils/repo-files.js";
 
 const SRC_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const REPO_ROOT = resolve(SRC_ROOT, "..");
@@ -19,7 +23,6 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_FILES = [
   "extensions/matrix/subagent-hooks-api.ts",
   "extensions/memory-core/src/dreaming.ts",
   "extensions/memory-lancedb/index.ts",
-  "extensions/skill-workshop/index.ts",
   "extensions/thread-ownership/index.ts",
   "extensions/whatsapp-lead-bot/index.ts",
   "extensions/whatsapp-lead-bot/src/context.ts",
@@ -30,24 +33,11 @@ const BUNDLED_TYPED_HOOK_REGISTRATION_GUARDS = {
   "extensions/codex/index.ts": ["inbound_claim"],
   "extensions/conversation-ingest/index.ts": ["message_received"],
   "extensions/diffs/src/plugin.ts": ["before_prompt_build"],
-  "extensions/discord/subagent-hooks-api.ts": [
-    "subagent_delivery_target",
-    "subagent_ended",
-    "subagent_spawning",
-  ],
-  "extensions/feishu/subagent-hooks-api.ts": [
-    "subagent_delivery_target",
-    "subagent_ended",
-    "subagent_spawning",
-  ],
-  "extensions/matrix/subagent-hooks-api.ts": [
-    "subagent_delivery_target",
-    "subagent_ended",
-    "subagent_spawning",
-  ],
+  "extensions/discord/subagent-hooks-api.ts": ["subagent_delivery_target", "subagent_ended"],
+  "extensions/feishu/subagent-hooks-api.ts": ["subagent_delivery_target", "subagent_ended"],
+  "extensions/matrix/subagent-hooks-api.ts": ["subagent_delivery_target", "subagent_ended"],
   "extensions/memory-core/src/dreaming.ts": ["before_agent_reply", "gateway_start", "gateway_stop"],
   "extensions/memory-lancedb/index.ts": ["agent_end", "before_prompt_build", "session_end"],
-  "extensions/skill-workshop/index.ts": ["agent_end", "before_prompt_build"],
   "extensions/thread-ownership/index.ts": ["message_received", "message_sending"],
   "extensions/whatsapp-lead-bot/index.ts": [
     "before_prompt_build",
@@ -76,7 +66,6 @@ const BUNDLED_LIVE_CONFIG_HOOK_GUARDS = {
     "api.runtime.config?.current?.() ?? api.config",
   ],
   "extensions/memory-lancedb/index.ts": ["resolveLivePluginConfigObject(", '"memory-lancedb"'],
-  "extensions/skill-workshop/index.ts": ["resolveLivePluginConfigObject(", '"skill-workshop"'],
   "extensions/thread-ownership/index.ts": [
     "resolveLivePluginConfigObject(",
     '"thread-ownership"',
@@ -88,7 +77,13 @@ const BUNDLED_LIVE_CONFIG_PROVIDER_GUARDS = {
     "resolvePluginConfigObject(",
     "const startupPluginConfig = (api.pluginConfig ?? {})",
     "const currentPluginConfig = resolveCurrentPluginConfig(ctx.config);",
-    "const currentGuardrail = resolveCurrentPluginConfig(config)?.guardrail;",
+    "const currentPluginConfig = resolveCurrentPluginConfig(config);",
+    "const currentGuardrail = currentPluginConfig?.guardrail;",
+  ],
+  "extensions/amazon-bedrock-mantle/register.sync.runtime.ts": [
+    "resolvePluginConfigObject(",
+    "const startupPluginConfig = (api.pluginConfig ?? {})",
+    "const currentPluginConfig = resolveCurrentPluginConfig(ctx.config);",
   ],
   "extensions/codex/provider.ts": [
     "resolvePluginConfigObject(",
@@ -114,10 +109,6 @@ const BUNDLED_LIVE_CONFIG_PROVIDER_GUARDS = {
 } as const satisfies Record<string, readonly string[]>;
 const BUNDLED_STARTUP_GATED_HOOK_FORBIDDEN_SNIPPETS = {
   "extensions/memory-lancedb/index.ts": ["if (cfg.autoRecall)", "if (cfg.autoCapture)"],
-  "extensions/skill-workshop/index.ts": [
-    "if (!startupConfig.enabled)",
-    'if (startupConfig.autoCapture && startupConfig.reviewMode !== "off")',
-  ],
 } as const satisfies Record<string, readonly string[]>;
 
 type FileFilter = {
@@ -128,14 +119,20 @@ type FileFilter = {
 function listTsFiles(rootRelativePath: string, filter: FileFilter = {}): string[] {
   const cacheKey = `${rootRelativePath}:${filter.excludeTests ? "exclude-tests" : ""}:${filter.testOnly ? "test-only" : ""}`;
   const cached = tsFilesCache.get(cacheKey);
-  if (cached) {
+  if (cached !== undefined) {
     return cached;
   }
+  const externalFiles = listExternalTsFiles(rootRelativePath, filter);
+  if (externalFiles) {
+    tsFilesCache.set(cacheKey, externalFiles);
+    return externalFiles;
+  }
+
   const root = resolve(REPO_ROOT, rootRelativePath);
   const files: string[] = [];
 
   function walk(directory: string) {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const fullPath = resolve(directory, entry.name);
       if (entry.isDirectory()) {
         if (entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git") {
@@ -147,7 +144,7 @@ function listTsFiles(rootRelativePath: string, filter: FileFilter = {}): string[
       if (!entry.isFile() || !entry.name.endsWith(".ts")) {
         continue;
       }
-      const repoRelativePath = relative(REPO_ROOT, fullPath).split(sep).join("/");
+      const repoRelativePath = toRepoRelativePath(REPO_ROOT, fullPath);
       if (filter.excludeTests && repoRelativePath.endsWith(".test.ts")) {
         continue;
       }
@@ -162,6 +159,69 @@ function listTsFiles(rootRelativePath: string, filter: FileFilter = {}): string[
   const sorted = files.toSorted();
   tsFilesCache.set(cacheKey, sorted);
   return sorted;
+}
+
+function listExternalTsFiles(rootRelativePath: string, filter: FileFilter): string[] | null {
+  return (
+    listGitTrackedTsFiles(rootRelativePath, filter) ?? listFindTsFiles(rootRelativePath, filter)
+  );
+}
+
+function listGitTrackedTsFiles(rootRelativePath: string, filter: FileFilter): string[] | null {
+  if (!rootRelativePath || rootRelativePath.startsWith("..")) {
+    return null;
+  }
+  const files = listGitTrackedFiles({ repoRoot: REPO_ROOT, pathspecs: rootRelativePath });
+  if (!files) {
+    return null;
+  }
+  return files
+    .filter((line) => line.endsWith(".ts"))
+    .filter((line) => !(filter.excludeTests && line.endsWith(".test.ts")))
+    .filter((line) => !(filter.testOnly && !line.endsWith(".test.ts")))
+    .filter((line) => fs.existsSync(resolve(REPO_ROOT, line)))
+    .toSorted();
+}
+
+function listFindTsFiles(rootRelativePath: string, filter: FileFilter): string[] | null {
+  if (!rootRelativePath || rootRelativePath.startsWith("..")) {
+    return null;
+  }
+  const root = resolve(REPO_ROOT, rootRelativePath);
+  const result = spawnSync(
+    "find",
+    [
+      root,
+      "-type",
+      "f",
+      "-name",
+      "*.ts",
+      "-not",
+      "-path",
+      "*/node_modules/*",
+      "-not",
+      "-path",
+      "*/dist/*",
+    ],
+    {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+  if (result.status !== 0) {
+    return null;
+  }
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => toRepoRelativePath(REPO_ROOT, line))
+    .filter((line) => line.endsWith(".ts"))
+    .filter((line) => !(filter.excludeTests && line.endsWith(".test.ts")))
+    .filter((line) => !(filter.testOnly && !line.endsWith(".test.ts")))
+    .toSorted();
 }
 
 function readRepoSource(file: string): string {
@@ -206,7 +266,7 @@ function collectBundledExtensionImports(source: string): string[] {
   }
 
   visit(sourceFile);
-  return specifiers.filter((specifier) => specifier.includes("extensions/"));
+  return specifiers.filter((specifier) => /(?:^|\/)extensions\/[^/]+\//u.test(specifier));
 }
 
 function isBundledExtensionImportHelperCall(expression: ts.Expression): boolean {
@@ -229,9 +289,11 @@ function collectTypedHookNames(source: string): string[] {
 }
 
 describe("plugin contract boundary invariants", () => {
-  it("keeps bundled-capability-metadata confined to contract/test inventory", () => {
+  let bundledCapabilityMetadataOffenders: string[];
+
+  beforeAll(() => {
     const files = listTsFiles("src");
-    const offenders = files.filter((file) => {
+    bundledCapabilityMetadataOffenders = files.filter((file) => {
       if (
         file === "src/plugins/contracts/boundary-invariants.test.ts" ||
         file.endsWith(".contract.test.ts") ||
@@ -241,7 +303,25 @@ describe("plugin contract boundary invariants", () => {
       }
       return readRepoSource(file).includes("contracts/inventory/bundled-capability-metadata");
     });
-    expect(offenders).toEqual([]);
+  });
+
+  it("lists boundary invariant source files without walking roots in-process", () => {
+    try {
+      expectNoReaddirSyncDuring(() => {
+        tsFilesCache.clear();
+        const files = listTsFiles("src", { excludeTests: true });
+
+        expect(files.length).toBeGreaterThan(0);
+        expect(files.every((file) => file.startsWith("src/") && file.endsWith(".ts"))).toBe(true);
+        expect(files.some((file) => file.endsWith(".test.ts"))).toBe(false);
+      });
+    } finally {
+      tsFilesCache.clear();
+    }
+  });
+
+  it("keeps bundled-capability-metadata confined to contract/test inventory", () => {
+    expect(bundledCapabilityMetadataOffenders).toStrictEqual([]);
   });
 
   it("keeps the bundled contract inventory out of non-test runtime code", () => {
@@ -249,17 +329,21 @@ describe("plugin contract boundary invariants", () => {
     const offenders = files.filter((file) => {
       return readRepoSource(file).includes("contracts/inventory/bundled-capability-metadata");
     });
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 
   it("keeps core tests off bundled extension deep imports", () => {
     const files = listTsFiles("src", { testOnly: true });
     const offenders = files.filter((file) => {
-      return collectBundledExtensionImports(readRepoSource(file)).some(
+      const source = readRepoSource(file);
+      if (!source.includes("extensions/")) {
+        return false;
+      }
+      return collectBundledExtensionImports(source).some(
         (specifier) => !isAllowedBundledExtensionImport(specifier),
       );
     });
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 
   it("keeps plugin contract tests off bundled path helpers unless the test is explicitly about paths", () => {
@@ -276,7 +360,7 @@ describe("plugin contract boundary invariants", () => {
         )
       );
     });
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 
   it("keeps channel production code off bundled-plugin-metadata helpers", () => {
@@ -284,7 +368,7 @@ describe("plugin contract boundary invariants", () => {
     const offenders = files.filter((file) => {
       return readRepoSource(file).includes("plugins/bundled-plugin-metadata");
     });
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 
   it("keeps contract loaders off hand-built bundled extension paths", () => {
@@ -296,13 +380,13 @@ describe("plugin contract boundary invariants", () => {
       const source = readRepoSource(file);
       return /extensions\/\$\{|\.\.\/\.\.\/\.\.\/\.\.\/extensions\//u.test(source);
     });
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 
   it("keeps bundled plugin production code off legacy before_agent_start hooks", () => {
     const files = listTsFiles("extensions", { excludeTests: true });
     const offenders = files.filter((file) => readRepoSource(file).includes("before_agent_start"));
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 
   it("keeps bundled plugin typed hook registrations on an explicit allowlist", () => {
@@ -325,7 +409,7 @@ describe("plugin contract boundary invariants", () => {
   it("keeps bundled plugin production code off raw registerHook calls", () => {
     const files = listTsFiles("extensions", { excludeTests: true });
     const offenders = files.filter((file) => /\bregisterHook\(/u.test(readRepoSource(file)));
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 
   it("keeps long-lived bundled hook handlers on live runtime config lookups", () => {
@@ -337,7 +421,7 @@ describe("plugin contract boundary invariants", () => {
           .map((snippet) => `${file}: ${snippet}`);
       },
     );
-    expect(missingGuards).toEqual([]);
+    expect(missingGuards).toStrictEqual([]);
   });
 
   it("keeps live provider config surfaces on runtime config lookups", () => {
@@ -349,7 +433,7 @@ describe("plugin contract boundary invariants", () => {
           .map((snippet) => `${file}: ${snippet}`);
       },
     );
-    expect(missingGuards).toEqual([]);
+    expect(missingGuards).toStrictEqual([]);
   });
 
   it("keeps long-lived bundled hook handlers off startup-only registration gates", () => {
@@ -361,6 +445,6 @@ describe("plugin contract boundary invariants", () => {
           .map((snippet) => `${file}: ${snippet}`);
       },
     );
-    expect(offenders).toEqual([]);
+    expect(offenders).toStrictEqual([]);
   });
 });

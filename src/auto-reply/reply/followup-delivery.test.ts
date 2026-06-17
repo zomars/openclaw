@@ -1,5 +1,7 @@
+// Tests follow-up reply delivery and route preservation.
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import { resolveFollowupDeliveryPayloads } from "./followup-delivery.js";
 
 vi.mock("../../channels/plugins/index.js", () => ({
@@ -15,7 +17,7 @@ describe("resolveFollowupDeliveryPayloads", () => {
         cfg: baseConfig,
         payloads: [{ text: "HEARTBEAT_OK" }],
       }),
-    ).toEqual([]);
+    ).toStrictEqual([]);
   });
 
   it("keeps media payloads when stripping heartbeat ack text", () => {
@@ -27,6 +29,22 @@ describe("resolveFollowupDeliveryPayloads", () => {
     ).toEqual([{ text: "", mediaUrl: "/tmp/image.png" }]);
   });
 
+  it("preserves transcript ownership when stripping heartbeat text", () => {
+    const payload = setReplyPayloadMetadata(
+      { text: "HEARTBEAT_OK still working" },
+      { assistantTranscriptOwned: true },
+    );
+
+    const [resolved] = resolveFollowupDeliveryPayloads({
+      cfg: baseConfig,
+      payloads: [payload],
+    });
+
+    expect(getReplyPayloadMetadata(resolved ?? {})).toEqual({
+      assistantTranscriptOwned: true,
+    });
+  });
+
   it("drops text payloads already sent via messaging tool", () => {
     expect(
       resolveFollowupDeliveryPayloads({
@@ -34,7 +52,7 @@ describe("resolveFollowupDeliveryPayloads", () => {
         payloads: [{ text: "hello world!" }],
         sentTexts: ["hello world!"],
       }),
-    ).toEqual([]);
+    ).toStrictEqual([]);
   });
 
   it("drops media payloads already sent via messaging tool", () => {
@@ -107,7 +125,7 @@ describe("resolveFollowupDeliveryPayloads", () => {
           { tool: "discord", provider: "discord", to: "channel:C2" },
         ],
       }),
-    ).toEqual([]);
+    ).toStrictEqual([]);
   });
 
   it("dedupes final media only against message-tool media sent to the same route", () => {
@@ -174,7 +192,7 @@ describe("resolveFollowupDeliveryPayloads", () => {
         sentTexts: ["hello world!"],
         sentTargets: [{ tool: "slack", provider: "slack", to: "channel:C1", text: "hello world!" }],
       }),
-    ).toEqual([]);
+    ).toStrictEqual([]);
   });
 
   it("delivers distinct replies when originating channel resolves the provider", () => {

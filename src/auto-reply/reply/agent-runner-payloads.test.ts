@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+// Tests reply payload construction and metadata propagation from agent runs.
+import { beforeEach, describe, expect, it } from "vitest";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
 import {
   getReplyPayloadMetadata,
   markReplyPayloadForSourceSuppressionDelivery,
+  setReplyPayloadMetadata,
 } from "../reply-payload.js";
 import { buildReplyPayloads } from "./agent-runner-payloads.js";
+import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
 
 const baseParams = {
   isHeartbeat: false,
@@ -14,6 +17,16 @@ const baseParams = {
   blockReplyPipeline: null,
   replyToMode: "off" as const,
 };
+
+function expectFields(value: unknown, expected: Record<string, unknown>): void {
+  if (!value || typeof value !== "object") {
+    throw new Error("expected fields object");
+  }
+  const record = value as Record<string, unknown>;
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    expect(record[key], key).toEqual(expectedValue);
+  }
+}
 
 async function expectSameTargetRepliesDelivered(params: { provider: string; to: string }) {
   const { replyPayloads } = await buildReplyPayloads({
@@ -31,6 +44,10 @@ async function expectSameTargetRepliesDelivered(params: { provider: string; to: 
 }
 
 describe("buildReplyPayloads media filter integration", () => {
+  beforeEach(() => {
+    resetPluginRuntimeStateForTest();
+  });
+
   it("strips legacy bracket tool blocks from heartbeat replies", async () => {
     const { replyPayloads } = await buildReplyPayloads({
       ...baseParams,
@@ -64,13 +81,44 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "⚠️ API rate limit reached.",
       replyToId: "msg-1",
     });
-    expect(getReplyPayloadMetadata(replyPayloads[0])).toMatchObject({
+    expectFields(getReplyPayloadMetadata(replyPayloads[0]), {
       deliverDespiteSourceReplySuppression: true,
     });
+  });
+
+  it("sanitizes source reply transcript mirror text with final payload text", async () => {
+    const text = [
+      "Visible",
+      "<function_response>",
+      'Searching for: "what skills matter most in the age of AI"',
+      "...",
+      "</function_response>",
+      "Done",
+    ].join("\n");
+    const payload = setReplyPayloadMetadata(
+      { text },
+      {
+        sourceReplyTranscriptMirror: {
+          sessionKey: "agent:main",
+          text,
+        },
+      },
+    );
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      payloads: [payload],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expect(replyPayloads[0]?.text).toBe("Visible\n\nDone");
+    expect(getReplyPayloadMetadata(replyPayloads[0])?.sourceReplyTranscriptMirror?.text).toBe(
+      "Visible\n\nDone",
+    );
   });
 
   it("strips media URL from payload when in messagingToolSentMediaUrls", async () => {
@@ -114,7 +162,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "hello",
       mediaUrl: undefined,
       mediaUrls: undefined,
@@ -139,13 +187,13 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(2);
-    expect(replyPayloads[0]).toMatchObject({
-      text: "keep text",
+    expectFields(replyPayloads[0], {
+      text: "keep text\n⚠️ Media failed.",
       mediaUrl: undefined,
       mediaUrls: undefined,
       audioAsVoice: false,
     });
-    expect(replyPayloads[1]).toMatchObject({
+    expectFields(replyPayloads[1], {
       text: "keep second",
     });
   });
@@ -170,7 +218,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "hello world!",
       mediaUrl: "file:///tmp/photo.jpg",
     });
@@ -283,7 +331,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "photo",
       mediaUrl: undefined,
       mediaUrls: undefined,
@@ -403,7 +451,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "caption",
       mediaUrl: undefined,
       mediaUrls: undefined,
@@ -488,7 +536,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       mediaUrl: "/tmp/generated.png",
       text: undefined,
     });
@@ -516,6 +564,32 @@ describe("buildReplyPayloads media filter integration", () => {
     expect(replyPayloads).toHaveLength(0);
   });
 
+  it("drops final caption and media already sent as one coalesced block payload", async () => {
+    const pipeline = createBlockReplyPipeline({
+      onBlockReply: async () => {},
+      timeoutMs: 5000,
+      coalescing: {
+        minChars: 1,
+        maxChars: 200,
+        idleMs: 0,
+        joiner: " ",
+      },
+    });
+    pipeline.enqueue({ text: "Preview" });
+    pipeline.enqueue({ text: "below" });
+    pipeline.enqueue({ mediaUrls: ["file:///photo.png"] });
+    await pipeline.flush({ force: true });
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      blockReplyPipeline: pipeline,
+      payloads: [{ text: "Preview below", mediaUrls: ["file:///photo.png"] }],
+    });
+
+    expect(replyPayloads).toHaveLength(0);
+  });
+
   it("preserves post-stream error payloads when block pipeline streamed successfully", async () => {
     const pipeline: Parameters<typeof buildReplyPayloads>[0]["blockReplyPipeline"] = {
       didStream: () => true,
@@ -537,7 +611,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "Agent couldn't generate a response. Please try again.",
       isError: true,
     });
@@ -553,6 +627,26 @@ describe("buildReplyPayloads media filter integration", () => {
     expect(replyPayloads).toHaveLength(0);
   });
 
+  it("keeps error payloads during silent turns", async () => {
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      silentExpected: true,
+      payloads: [
+        { text: "normal maintenance reply" },
+        {
+          text: "⚠️ write failed: Memory flush writes are restricted to memory/2026-05-05.md; use that path only.",
+          isError: true,
+        },
+      ],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], {
+      text: "⚠️ write failed: Memory flush writes are restricted to memory/2026-05-05.md; use that path only.",
+      isError: true,
+    });
+  });
+
   it("keeps voice media payloads during silent turns", async () => {
     const { replyPayloads } = await buildReplyPayloads({
       ...baseParams,
@@ -561,7 +655,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: undefined,
       mediaUrl: "file:///tmp/voice.opus",
       audioAsVoice: true,
@@ -592,6 +686,26 @@ describe("buildReplyPayloads media filter integration", () => {
     expect(replyPayloads).toHaveLength(0);
   });
 
+  it("surfaces a warning when non-silent media payloads fail normalization", async () => {
+    const normalizeMediaPaths = async () => {
+      throw new Error("file not found");
+    };
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      payloads: [{ text: "MEDIA: ./missing.png" }],
+      normalizeMediaPaths,
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], {
+      text: "⚠️ Media failed.",
+      mediaUrl: undefined,
+      mediaUrls: undefined,
+      audioAsVoice: false,
+    });
+  });
+
   it("extracts markdown image replies into final payload media urls", async () => {
     const { replyPayloads } = await buildReplyPayloads({
       ...baseParams,
@@ -600,7 +714,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "Here you go",
       mediaUrl: "https://example.com/chart.png",
       mediaUrls: ["https://example.com/chart.png"],
@@ -615,7 +729,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text: "Look now",
       mediaUrl: "https://example.com/chart.png",
       mediaUrls: ["https://example.com/chart.png"],
@@ -631,7 +745,7 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(1);
-    expect(replyPayloads[0]).toMatchObject({
+    expectFields(replyPayloads[0], {
       text,
     });
     expect(replyPayloads[0]?.mediaUrl).toBeUndefined();
@@ -676,6 +790,205 @@ describe("buildReplyPayloads media filter integration", () => {
     });
 
     expect(replyPayloads).toHaveLength(0);
+  });
+
+  it("keeps only final media when the text was sent as a direct block", async () => {
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>([
+      createBlockReplyContentKey({ text: "response" }),
+    ]);
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      directlySentBlockKeys,
+      directlySentBlockPayloads: [{ text: "response" }],
+      payloads: [{ text: "response\n\nMEDIA:/tmp/generated.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], {
+      text: undefined,
+      mediaUrl: "/tmp/generated.png",
+      mediaUrls: ["/tmp/generated.png"],
+    });
+  });
+
+  it("keeps only final media after a direct block without a streaming pipeline", async () => {
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>([
+      createBlockReplyContentKey({ text: "response" }),
+    ]);
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockKeys,
+      directlySentBlockPayloads: [{ text: "response" }],
+      payloads: [{ text: "response\n\nMEDIA:/tmp/generated.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], {
+      text: undefined,
+      mediaUrl: "/tmp/generated.png",
+      mediaUrls: ["/tmp/generated.png"],
+    });
+  });
+
+  it("keeps unmatched text finals when unrelated direct blocks were sent", async () => {
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>([
+      createBlockReplyContentKey({ mediaUrl: "/tmp/other.png" }),
+    ]);
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockKeys,
+      payloads: [{ text: "new final response" }],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], { text: "new final response" });
+  });
+
+  it("keeps only final media after multiple direct text blocks", async () => {
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>([
+      createBlockReplyContentKey({ text: "Preview" }),
+      createBlockReplyContentKey({ text: " below" }),
+    ]);
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockKeys,
+      directlySentBlockPayloads: [{ text: "Preview" }, { text: " below" }],
+      payloads: [{ text: "Preview below\n\nMEDIA:/tmp/generated.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], {
+      text: undefined,
+      mediaUrl: "/tmp/generated.png",
+      mediaUrls: ["/tmp/generated.png"],
+    });
+  });
+
+  it("keeps only final media after repeated identical direct text blocks", async () => {
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>([createBlockReplyContentKey({ text: "ha" })]);
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockKeys,
+      directlySentBlockPayloads: [{ text: "ha" }, { text: "ha" }],
+      payloads: [{ text: "haha\n\nMEDIA:/tmp/generated.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], {
+      text: undefined,
+      mediaUrl: "/tmp/generated.png",
+      mediaUrls: ["/tmp/generated.png"],
+    });
+  });
+
+  it("preserves final text when internal whitespace changed", async () => {
+    const directlySentBlockPayloads = [
+      setReplyPayloadMetadata({ text: "constx=1" }, { assistantMessageIndex: 1 }),
+    ];
+    const finalPayload = setReplyPayloadMetadata(
+      { text: "const x = 1\n\nMEDIA:/tmp/generated.png" },
+      { assistantMessageIndex: 1 },
+    );
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockPayloads,
+      payloads: [finalPayload],
+    });
+
+    expectFields(replyPayloads[0], {
+      text: "const x = 1",
+      mediaUrls: ["/tmp/generated.png"],
+    });
+  });
+
+  it("keeps only media not already sent with a direct block", async () => {
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>([
+      createBlockReplyContentKey({ text: "response", mediaUrl: "/tmp/already.png" }),
+    ]);
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockKeys,
+      directlySentBlockPayloads: [{ text: "response", mediaUrl: "/tmp/already.png" }],
+      payloads: [
+        {
+          text: "response",
+          mediaUrls: ["/tmp/already.png", "/tmp/new.png"],
+        },
+      ],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expectFields(replyPayloads[0], {
+      text: undefined,
+      mediaUrl: undefined,
+      mediaUrls: ["/tmp/new.png"],
+    });
+  });
+
+  it("ignores direct status notices when matching final text", async () => {
+    const { createBlockReplyContentKey } = await import("./block-reply-pipeline.js");
+    const directlySentBlockKeys = new Set<string>([
+      createBlockReplyContentKey({ text: "Compacting", isStatusNotice: true }),
+      createBlockReplyContentKey({ text: "response" }),
+    ]);
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockKeys,
+      directlySentBlockPayloads: [{ text: "response" }],
+      payloads: [{ text: "response\n\nMEDIA:/tmp/generated.png" }],
+    });
+
+    expectFields(replyPayloads[0], {
+      text: undefined,
+      mediaUrls: ["/tmp/generated.png"],
+    });
+  });
+
+  it("matches direct fragments within each assistant message", async () => {
+    const firstDirect = setReplyPayloadMetadata({ text: "alpha" }, { assistantMessageIndex: 1 });
+    const secondDirect = setReplyPayloadMetadata({ text: "beta" }, { assistantMessageIndex: 2 });
+    const firstFinal = setReplyPayloadMetadata(
+      { text: "alpha\n\nMEDIA:/tmp/a.png" },
+      { assistantMessageIndex: 1 },
+    );
+    const secondFinal = setReplyPayloadMetadata(
+      { text: "beta\n\nMEDIA:/tmp/b.png" },
+      { assistantMessageIndex: 2 },
+    );
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      directlySentBlockPayloads: [firstDirect, secondDirect],
+      payloads: [firstFinal, secondFinal],
+    });
+
+    expect(replyPayloads.map((payload) => payload.text)).toEqual([undefined, undefined]);
+    expect(replyPayloads.map((payload) => payload.mediaUrls)).toEqual([
+      ["/tmp/a.png"],
+      ["/tmp/b.png"],
+    ]);
   });
 
   it("does not suppress same-target replies when accountId differs", async () => {

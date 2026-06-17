@@ -1,3 +1,4 @@
+// Session store migrations repair legacy field names during load/save normalization.
 import type { SessionEntry } from "./types.js";
 
 function resolveCanonicalTelegramDmTopicSessionKey(key: string): string | undefined {
