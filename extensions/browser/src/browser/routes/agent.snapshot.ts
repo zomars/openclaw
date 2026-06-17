@@ -1,5 +1,6 @@
 import path from "node:path";
 import { ensureMediaDir, saveMediaBuffer } from "../../media/store.js";
+import { saveBrowserScreenshotArtifact } from "../artifacts.js";
 import { resolveBrowserNavigationProxyMode } from "../browser-proxy-mode.js";
 import { captureScreenshot, snapshotAria, snapshotRoleViaCdp } from "../cdp.js";
 import {
@@ -206,16 +207,40 @@ async function saveNormalizedScreenshotResponse(params: {
     maxSide: DEFAULT_BROWSER_SCREENSHOT_MAX_SIDE,
     maxBytes: DEFAULT_BROWSER_SCREENSHOT_MAX_BYTES,
   });
-  await saveBrowserMediaResponse({
+  await saveBrowserScreenshotResponse({
     res: params.res,
     buffer: normalized.buffer,
     contentType: normalized.contentType ?? `image/${params.type}`,
-    maxBytes: DEFAULT_BROWSER_SCREENSHOT_MAX_BYTES,
     targetId: params.targetId,
     url: params.url,
     labels: params.labels,
     labelsCount: params.labelsCount,
     labelsSkipped: params.labelsSkipped,
+  });
+}
+
+async function saveBrowserScreenshotResponse(params: {
+  res: BrowserResponse;
+  buffer: Buffer;
+  contentType: string;
+  targetId: string;
+  url: string;
+  labels?: boolean;
+  labelsCount?: number;
+  labelsSkipped?: number;
+}) {
+  const saved = await saveBrowserScreenshotArtifact({
+    buffer: params.buffer,
+    contentType: params.contentType,
+  });
+  params.res.json({
+    ok: true,
+    path: path.resolve(saved.path),
+    targetId: params.targetId,
+    url: params.url,
+    ...(params.labels ? { labels: true } : {}),
+    ...(typeof params.labelsCount === "number" ? { labelsCount: params.labelsCount } : {}),
+    ...(typeof params.labelsSkipped === "number" ? { labelsSkipped: params.labelsSkipped } : {}),
   });
 }
 

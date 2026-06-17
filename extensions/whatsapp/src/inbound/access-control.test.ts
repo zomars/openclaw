@@ -169,6 +169,7 @@ describe("fromMe outbound DM suppression", () => {
     });
 
     expect(result.allowed).toBe(true);
+    expect(result.isAccountOwnerMessage).toBe(true);
   });
 });
 

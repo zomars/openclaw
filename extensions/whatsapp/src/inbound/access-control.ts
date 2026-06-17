@@ -207,6 +207,7 @@ export async function checkInboundAccessControl(params: {
     shouldMarkRead: true,
     isSelfChat,
     resolvedAccountId: account.accountId,
+    isAccountOwnerMessage: params.isFromMe || undefined,
   };
 }
 

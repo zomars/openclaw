@@ -66,6 +66,12 @@ vi.mock("../screenshot.js", () => ({
   })),
 }));
 
+vi.mock("../artifacts.js", () => ({
+  saveBrowserScreenshotArtifact: vi.fn(async () => ({
+    path: "/tmp/openclaw/artifacts/fake.png",
+  })),
+}));
+
 vi.mock("../../media/store.js", () => ({
   ensureMediaDir: vi.fn(async () => {}),
   saveMediaBuffer: vi.fn(async () => ({ path: "/tmp/fake.png" })),
@@ -162,7 +168,7 @@ describe("existing-session browser routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toMatchObject({
       ok: true,
-      path: "/tmp/fake.png",
+      path: "/tmp/openclaw/artifacts/fake.png",
       targetId: "7",
     });
     expect(chromeMcpMocks.takeChromeMcpScreenshot).toHaveBeenCalledWith({

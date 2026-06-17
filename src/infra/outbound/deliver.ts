@@ -25,8 +25,13 @@ import {
   type ReplyPayloadDeliveryPin,
 } from "../../interactive/payload.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import type { OutboundMediaAccess } from "../../media/load-options.js";
+import { saveMediaArtifact } from "../../media/artifacts.js";
+import {
+  buildOutboundMediaLoadOptions,
+  type OutboundMediaAccess,
+} from "../../media/load-options.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
+import { loadWebMedia } from "../../media/web-media.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { diagnosticErrorCategory } from "../diagnostic-error-metadata.js";
 import { emitDiagnosticEvent, type DiagnosticMessageDeliveryKind } from "../diagnostic-events.js";
@@ -378,6 +383,92 @@ type DeliverOutboundPayloadsCoreParams = {
 
 function collectPayloadMediaSources(plan: readonly OutboundPayloadPlan[]): string[] {
   return plan.flatMap((entry) => entry.parts.mediaUrls);
+}
+
+function isLikelyLocalOutboundMediaSource(source: string): boolean {
+  const trimmed = source.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/^\s*media:\/\//i.test(trimmed)) {
+    return false;
+  }
+  if (/^\s*data:/i.test(trimmed)) {
+    return false;
+  }
+  if (/^\s*(?:https?|mxc):\/\//i.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
+async function stageLocalOutboundMediaSource(params: {
+  source: string;
+  mediaAccess: OutboundMediaAccess;
+  cache: Map<string, string>;
+}): Promise<string> {
+  const source = params.source.trim();
+  if (!isLikelyLocalOutboundMediaSource(source)) {
+    return params.source;
+  }
+  const cached = params.cache.get(source);
+  if (cached) {
+    return cached;
+  }
+  let media: Awaited<ReturnType<typeof loadWebMedia>>;
+  try {
+    media = await loadWebMedia(
+      source,
+      buildOutboundMediaLoadOptions({
+        mediaAccess: params.mediaAccess,
+        mediaLocalRoots: params.mediaAccess.localRoots,
+        mediaReadFile: params.mediaAccess.readFile,
+      }),
+    );
+  } catch {
+    // Preserve existing behavior for opaque/plugin-specific or policy-denied local-looking
+    // sources; channel adapters that know how to handle them still receive the original.
+    return params.source;
+  }
+  const saved = await saveMediaArtifact({
+    buffer: media.buffer,
+    contentType: media.contentType ?? undefined,
+    fileName: media.fileName ?? source,
+    prefix: "outbound-media",
+  });
+  params.cache.set(source, saved.path);
+  return saved.path;
+}
+
+async function stageLocalOutboundPayloadMedia(params: {
+  payload: ReplyPayload;
+  mediaAccess: OutboundMediaAccess;
+}): Promise<ReplyPayload> {
+  const mediaUrls = params.payload.mediaUrls ?? [];
+  const mediaUrl = params.payload.mediaUrl ?? undefined;
+  if (mediaUrls.length === 0 && !mediaUrl) {
+    return params.payload;
+  }
+  const cache = new Map<string, string>();
+  const stagedMediaUrls = mediaUrls.length
+    ? await Promise.all(
+        mediaUrls.map((source) =>
+          stageLocalOutboundMediaSource({ source, mediaAccess: params.mediaAccess, cache }),
+        ),
+      )
+    : undefined;
+  const stagedMediaUrl = mediaUrl
+    ? await stageLocalOutboundMediaSource({
+        source: mediaUrl,
+        mediaAccess: params.mediaAccess,
+        cache,
+      })
+    : undefined;
+  return {
+    ...params.payload,
+    ...(stagedMediaUrls ? { mediaUrls: stagedMediaUrls } : {}),
+    ...(stagedMediaUrl ? { mediaUrl: stagedMediaUrl } : {}),
+  };
 }
 
 export type DeliverOutboundPayloadsParams = DeliverOutboundPayloadsCoreParams & {
@@ -1093,7 +1184,7 @@ async function deliverOutboundPayloadsCore(
       const normalizedEffectivePayload = handler.normalizePayload
         ? handler.normalizePayload(renderedPayload)
         : renderedPayload;
-      const effectivePayload = normalizedEffectivePayload
+      let effectivePayload = normalizedEffectivePayload
         ? normalizeEmptyPayloadForDelivery(
             stripInternalRuntimeScaffoldingFromPayload(normalizedEffectivePayload),
           )
@@ -1101,6 +1192,10 @@ async function deliverOutboundPayloadsCore(
       if (!effectivePayload) {
         continue;
       }
+      effectivePayload = await stageLocalOutboundPayloadMedia({
+        payload: effectivePayload,
+        mediaAccess,
+      });
       payloadSummary = buildPayloadSummary(effectivePayload);
       startDeliveryDiagnostics(deliveryKindForPayload(effectivePayload, payloadSummary));
 

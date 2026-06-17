@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chunkText } from "../../auto-reply/chunk.js";
@@ -291,6 +292,42 @@ describe("deliverOutboundPayloads", () => {
     resetDiagnosticEventsForTest();
     releasePinnedPluginChannelRegistry();
     setActivePluginRegistry(emptyRegistry);
+  });
+
+  it("stages local outbound media into OpenClaw artifacts before channel delivery", async () => {
+    const externalDir = await fs.mkdtemp(path.join("/tmp", "openclaw-outbound-external-"));
+    const sourcePath = path.join(externalDir, "shot.png");
+    await fs.writeFile(
+      sourcePath,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lw9W2QAAAABJRU5ErkJggg==",
+        "base64",
+      ),
+    );
+    const sendMatrix = vi.fn().mockResolvedValue({ messageId: "m1", roomId: "!room:example" });
+
+    try {
+      await deliverMatrixPayload({
+        sendMatrix,
+        payload: { text: `caption\nMEDIA:${sourcePath}` },
+      });
+
+      const deliveredOptions = sendMatrix.mock.calls[0]?.[2] as { mediaUrl?: string } | undefined;
+      expect(deliveredOptions?.mediaUrl).toBeDefined();
+      expect(deliveredOptions?.mediaUrl).not.toBe(sourcePath);
+      expect(deliveredOptions?.mediaUrl).toContain(
+        path.join(expectedPreferredTmpRoot, "artifacts"),
+      );
+      await expect(fs.stat(deliveredOptions?.mediaUrl ?? "")).resolves.toMatchObject({
+        size: expect.any(Number),
+      });
+    } finally {
+      await fs.rm(externalDir, { recursive: true, force: true });
+      await fs.rm(path.join(expectedPreferredTmpRoot, "artifacts"), {
+        recursive: true,
+        force: true,
+      });
+    }
   });
 
   it("emits bounded delivery diagnostics for successful outbound sends", async () => {
