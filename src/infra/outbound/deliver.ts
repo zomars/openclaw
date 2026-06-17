@@ -1786,7 +1786,7 @@ async function deliverOutboundPayloadsCore(
       }
       effectivePayload = await stageLocalOutboundPayloadMedia({
         payload: effectivePayload,
-        mediaAccess,
+        mediaAccess: resolveMediaAccess(buildPayloadSummary(effectivePayload).mediaUrls),
       });
       payloadSummary = buildPayloadSummary(effectivePayload);
       const deliveryHandler = await getDeliveryHandler(payloadSummary.mediaUrls);

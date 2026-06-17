@@ -36,6 +36,24 @@ const DEFAULT_OPTIONS: NormalizeOptions = {
   applyDefaults: false,
 };
 
+function hasTrimmedStringValue(value: unknown) {
+  return parseOptionalField(TrimmedNonEmptyStringFieldSchema, value) !== undefined;
+}
+
+// Fork: distinguishes agentTurn payloads from systemEvent/script when no kind
+// is set, by looking for agentTurn-only fields (model, fallbacks, thinking, etc.).
+function hasAgentTurnPayloadHint(payload: UnknownRecord) {
+  return (
+    hasTrimmedStringValue(payload.model) ||
+    normalizeTrimmedStringArray(payload.fallbacks) !== undefined ||
+    normalizeTrimmedStringArray(payload.toolsAllow, { allowNull: true }) !== undefined ||
+    hasTrimmedStringValue(payload.thinking) ||
+    typeof payload.timeoutSeconds === "number" ||
+    typeof payload.lightContext === "boolean" ||
+    typeof payload.allowUnsafeExternalContent === "boolean"
+  );
+}
+
 function normalizeTrimmedStringArray(
   value: unknown,
   options?: { allowNull?: boolean },

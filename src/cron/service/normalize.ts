@@ -77,8 +77,11 @@ export function normalizePayloadToSystemText(payload: CronPayload) {
   if (payload.kind === "script") {
     return `script: ${payload.command}`;
   }
-  return (payload.kind === "agentTurn" || payload.kind === "command") &&
-    typeof payload.message === "string"
-    ? payload.message.trim()
-    : "";
+  if (payload.kind === "agentTurn" && typeof payload.message === "string") {
+    return payload.message.trim();
+  }
+  if (payload.kind === "command") {
+    return `command: ${payload.argv.join(" ")}`;
+  }
+  return "";
 }

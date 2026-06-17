@@ -236,28 +236,6 @@ function formatSessionExportWarning(summary: SessionExportWarningSummary): strin
   return unreachable;
 }
 
-function addCollisionSuffix(filePath: string, suffix: number): string {
-  const ext = path.extname(filePath);
-  const baseName = path.basename(filePath, ext);
-  return path.join(path.dirname(filePath), `${baseName}-${suffix}${ext}`);
-}
-
-async function writeNewDefaultExportFile(filePath: string, html: string): Promise<string> {
-  for (let suffix = 1; suffix <= 100; suffix++) {
-    const candidate = suffix === 1 ? filePath : addCollisionSuffix(filePath, suffix);
-    try {
-      await fsp.writeFile(candidate, html, { encoding: "utf-8", flag: "wx" });
-      return candidate;
-    } catch (error) {
-      if (typeof error === "object" && error && "code" in error && error.code === "EEXIST") {
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw new Error(`Could not find an unused export filename near ${filePath}`);
-}
-
 async function readSessionDataFromTranscript(sessionFile: string): Promise<{
   header: SessionHeader | null;
   entries: AgentSessionEntry[];

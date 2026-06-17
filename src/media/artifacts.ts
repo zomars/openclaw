@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
-import { extensionForMime } from "./mime.js";
+import { extensionForMime } from "@openclaw/media-core/mime";
 
 export const MEDIA_ARTIFACTS_DIR_NAME = "artifacts";
 const ARTIFACT_DIR_MODE = 0o700;

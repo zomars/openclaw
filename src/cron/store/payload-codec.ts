@@ -105,6 +105,23 @@ export function bindPayloadColumns(
       payload_tools_allow_json: null,
     };
   }
+  if (payload.kind === "script") {
+    // Fork: cron "script" kind runs a command + args via execFile. Whole payload
+    // serializes to payload_message (mirrors the command-kind serialization).
+    const { timeoutSeconds: _scriptTimeout, ...scriptMessage } = payload;
+    return {
+      payload_kind: "script",
+      payload_message: serializeJson(scriptMessage),
+      payload_model: null,
+      payload_fallbacks_json: null,
+      payload_thinking: null,
+      payload_timeout_seconds: payload.timeoutSeconds ?? null,
+      payload_allow_unsafe_external_content: null,
+      payload_external_content_source_json: null,
+      payload_light_context: null,
+      payload_tools_allow_json: null,
+    };
+  }
   return {
     payload_kind: "agentTurn",
     payload_message: payload.message,
@@ -166,6 +183,30 @@ export function payloadFromRow(row: CronJobRow): CronPayload | null {
     return {
       kind: "command",
       ...command,
+      ...(timeoutSeconds != null ? { timeoutSeconds } : {}),
+    };
+  }
+  if (row.payload_kind === "script") {
+    // Fork: script payload deserialized from JSON in payload_message.
+    const raw = row.payload_message;
+    const parsed = raw ? parseJsonValue<unknown>(raw, undefined) : undefined;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.command !== "string" || record.command.length === 0) {
+      return null;
+    }
+    const args = Array.isArray(record.args)
+      ? record.args.filter((v): v is string => typeof v === "string")
+      : undefined;
+    const cwd = typeof record.cwd === "string" ? record.cwd : undefined;
+    const timeoutSeconds = normalizeNumber(row.payload_timeout_seconds);
+    return {
+      kind: "script",
+      command: record.command,
+      ...(args && args.length > 0 ? { args } : {}),
+      ...(cwd ? { cwd } : {}),
       ...(timeoutSeconds != null ? { timeoutSeconds } : {}),
     };
   }
