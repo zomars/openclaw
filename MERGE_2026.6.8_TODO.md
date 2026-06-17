@@ -64,10 +64,23 @@ topic session routes`. If our Telegram code patches survived the
 merge intact, the docs may need updating to reflect actual behavior.
 Verify after merge.
 
-## extensions/whatsapp/src/inbound/monitor.ts
+## extensions/whatsapp/src/inbound/monitor.ts — RESOLVED
 
 Took upstream's ~48KB version (we had 25.8KB v2026.4.x baseline).
-Re-apply three surgical patches:
+The three surgical patches were re-applied in a follow-up commit
+after the merge commit (see git log).
+
+Verification checklist still applies (run after `pnpm build` and gateway
+restart):
+1. WhatsApp DM with media downloads and persists `media_path` in
+   lead-bot's messages table.
+2. LID-JID conversation is retrievable by
+   `whatsapp_history_fetch(peer="+<e164>")`.
+3. Coworker reply via WhatsApp Web does NOT trigger lead-bot
+   auto-response (filterWhatsAppWebHandoff still fires via
+   `platform.isAccountOwnerMessage`).
+
+Original patch details (kept for reference):
 
 ### 1. `isAccountOwnerMessage` wire-through
 

@@ -20,6 +20,7 @@ import { defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { maybeResolveWhatsAppApprovalReaction } from "../approval-reactions.js";
+import { emitEnrichedWhatsAppMessage, emitRawWhatsAppMessage } from "../active-listener.js";
 import { readWebSelfIdentityForDecision, WhatsAppAuthUnstableError } from "../auth-store.js";
 import { getRegisteredWhatsAppConnectionController } from "../connection-controller-registry.js";
 import { getPrimaryIdentityId, identitiesOverlap, resolveComparableIdentity } from "../identity.js";
@@ -908,6 +909,23 @@ export async function attachWebInboxToSocket(
       return;
     }
 
+    // Fork: enriched-message event feeds whatsapp-lead-bot's media_path
+    // (schema v9) and peer_e164 (schema v11) backfill. Fires for every
+    // inbound message, not only when media is present, so LID conversations
+    // (peerE164 = inbound.from) can be resolved by E.164 later.
+    if (inbound.id) {
+      emitEnrichedWhatsAppMessage({
+        id: inbound.id,
+        accountId: options.accountId,
+        remoteJid: inbound.remoteJid,
+        peerE164: !inbound.group && inbound.from ? inbound.from : undefined,
+        fromMe: Boolean(msg.key?.fromMe),
+        mediaPath: enriched.mediaPath,
+        mediaType: enriched.mediaType,
+        mediaFileName: enriched.mediaFileName,
+      });
+    }
+
     const dedupeKey = inbound.id ? `${options.accountId}:${inbound.remoteJid}:${inbound.id}` : "";
     const dedupeClaim = dedupeKey ? await claimRecentInboundMessageDelivery(dedupeKey) : "claimed";
     if (dedupeClaim !== "claimed") {
@@ -1120,6 +1138,10 @@ export async function attachWebInboxToSocket(
         selfLid: self.lid ?? undefined,
         selfE164: self.e164 ?? undefined,
         fromMe: Boolean(msg.key?.fromMe),
+        // Fork: surfaces account-owner-via-WhatsApp-Web for whatsapp-lead-bot's
+        // filterWhatsAppWebHandoff. Without this, coworker replies are treated
+        // as lead messages and the bot auto-responds.
+        isAccountOwnerMessage: inbound.access.isAccountOwnerMessage,
         sendComposing,
         reply,
         sendMedia,
@@ -1188,6 +1210,11 @@ export async function attachWebInboxToSocket(
     }
     for (const msg of upsert.messages ?? []) {
       const receiveOrder = nextReceiveOrder++;
+      // Fork: raw event lets whatsapp-lead-bot's eager subscriber persist the
+      // message row with E.164 derived from @s.whatsapp.net JIDs before
+      // enrichment runs. Fires for every raw upsert, including approval
+      // reactions, so subscribers see the full inbound stream.
+      emitRawWhatsAppMessage(options.accountId, msg);
       if (
         await maybeResolveWhatsAppApprovalReaction({
           cfg: options.loadConfig?.() ?? options.cfg,
