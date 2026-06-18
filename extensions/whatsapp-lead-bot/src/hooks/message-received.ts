@@ -47,7 +47,10 @@ interface LeadMessageInput extends MessageInput {
   lead: Lead;
 }
 
-function isPrimaryAgentRoute(config: WhatsAppLeadBotConfig, ctx: PluginHookMessageContext): boolean {
+function isPrimaryAgentRoute(
+  config: WhatsAppLeadBotConfig,
+  ctx: PluginHookMessageContext,
+): boolean {
   return !config.agentId || !ctx.agentId || ctx.agentId === config.agentId;
 }
 
@@ -81,25 +84,21 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     return null;
   }
 
-  async function filterSelfChat({ event, runtime }: MessageInput): Promise<FilterResult> {
+  async function filterOwnerAdminCommand({ event, runtime }: MessageInput): Promise<FilterResult> {
     const { from, content, metadata } = event;
     const to = metadata?.to as string | undefined;
     const sentByAccountOwner = metadata?.sentByAccountOwner === true;
     const sameNumber = !!to && normalizePhone(from) === normalizePhone(to);
-    // Strict self-chat: message must come from the connected device AND have
-    // matching from/to numbers. Both signals together ensure admin commands
-    // can only originate from the operator messaging the bot's own number.
-    const isSelfChat = sameNumber && sentByAccountOwner;
 
     console.log(
-      `[message-received] Self-chat check: from=${from}, to=${to}, sameNumber=${sameNumber}, sentByAccountOwner=${sentByAccountOwner}, isSelfChat=${isSelfChat}`,
+      `[message-received] Owner admin check: from=${from}, to=${to}, sameNumber=${sameNumber}, sentByAccountOwner=${sentByAccountOwner}`,
     );
 
-    if (!isSelfChat) {
+    if (!sentByAccountOwner) {
       return null;
     }
 
-    console.log(`[message-received] Detected self-chat, parsing command: "${content}"`);
+    console.log(`[message-received] Detected owner message, parsing command: "${content}"`);
     const command = deps.adminHandler.parseCommand(content);
     console.log(`[message-received] Parsed command:`, command);
 
@@ -115,8 +114,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
       }
       return { suppress: true };
     }
-    // Not an admin command → let OpenClaw handle
-    return {};
+    return null;
   }
 
   async function filterWhatsAppWebHandoff({ event }: MessageInput): Promise<FilterResult> {
@@ -261,7 +259,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     );
 
     // Async pre-lead filters
-    for (const filter of [filterSelfChat, filterWhatsAppWebHandoff] as const) {
+    for (const filter of [filterOwnerAdminCommand, filterWhatsAppWebHandoff] as const) {
       const result = await filter(input);
       if (result !== null) {
         return result;

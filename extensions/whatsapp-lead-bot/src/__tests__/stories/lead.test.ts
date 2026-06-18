@@ -76,11 +76,7 @@ function createMessageHandlerFixture(configOverrides: Parameters<typeof createTe
     { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 10 },
     notifier,
   );
-  const rateLimitCoordinator = new RateLimitCoordinator(
-    circuitBreaker,
-    globalLimiter,
-    rateLimiter,
-  );
+  const rateLimitCoordinator = new RateLimitCoordinator(circuitBreaker, globalLimiter, rateLimiter);
   const mediaHandler = new MediaHandler();
   const agentNotifier = new AgentNotifier(runtime, config);
   const adminHandler = new AdminCommandHandler(db, handoffManager, rateLimiter, null, null);
@@ -96,7 +92,10 @@ function createMessageHandlerFixture(configOverrides: Parameters<typeof createTe
     handoffManager,
     handoffInterceptor,
   });
-  const wrappedHandler = withContext(() => runtime, (_deps: {}) => handler)({});
+  const wrappedHandler = withContext(
+    () => runtime,
+    (_deps: {}) => handler,
+  )({});
 
   return { db, runtime, wrappedHandler };
 }
@@ -194,6 +193,30 @@ describe("Lead / Customer Stories", () => {
     expect(result).toEqual({ suppress: true });
     expect(runtime.sentMessages).toHaveLength(1);
     expect(runtime.sentMessages[0]?.to).toBe("+5216672350818");
+  });
+
+  it("consumes owner WhatsApp Web admin commands when from is the remote chat", async () => {
+    const { runtime, wrappedHandler } = createMessageHandlerFixture({
+      whatsappAccounts: ["acct-1"],
+      agentId: "solayre-leads",
+    });
+
+    const result = await wrappedHandler(
+      {
+        from: "+5216678403290",
+        content: "/recent 1",
+        timestamp: Date.now(),
+        metadata: {
+          to: "+5216621413782",
+          sentByAccountOwner: true,
+        },
+      },
+      { channelId: "whatsapp", accountId: "acct-1", agentId: "solayre-coworker" },
+    );
+
+    expect(result).toEqual({ suppress: true });
+    expect(runtime.sentMessages).toHaveLength(1);
+    expect(runtime.sentMessages[0]?.to).toBe("+5216678403290");
   });
 
   it("does not run the lead pipeline for non-admin sibling agent messages", async () => {
