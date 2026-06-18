@@ -297,6 +297,7 @@ export async function processMessage(params: {
           OriginatingChannel: "whatsapp",
           OriginatingTo: conversationId,
           AccountId: params.route.accountId,
+          AgentId: params.route.agentId,
         },
         cfg: params.cfg,
       });

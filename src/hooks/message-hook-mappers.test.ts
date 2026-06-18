@@ -128,6 +128,16 @@ describe("message hook mappers", () => {
     expect(canonical.guildId).toBe("guild-1");
   });
 
+  it("maps resolved inbound agent id into plugin message context", () => {
+    const canonical = deriveInboundMessageHookContext(makeInboundCtx({ AgentId: "solayre-leads" }));
+
+    expect(canonical.agentId).toBe("solayre-leads");
+    expect(toPluginMessageContext(canonical)).toMatchObject({
+      agentId: "solayre-leads",
+      sessionKey: "session-1",
+    });
+  });
+
   it("maps inbound reply metadata into canonical and plugin payloads", () => {
     const canonical = deriveInboundMessageHookContext(
       makeInboundCtx({

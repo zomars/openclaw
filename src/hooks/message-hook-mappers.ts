@@ -36,6 +36,7 @@ export type CanonicalInboundMessageHookContext = {
   conversationId?: string;
   sessionKey?: string;
   runId?: string;
+  agentId?: string;
   messageId?: string;
   senderId?: string;
   senderName?: string;
@@ -140,6 +141,7 @@ export function deriveInboundMessageHookContext(
     accountId: ctx.AccountId,
     conversationId,
     sessionKey: ctx.SessionKey,
+    agentId: ctx.AgentId,
     messageId:
       overrides?.messageId ??
       ctx.MessageSidFull ??
@@ -247,6 +249,9 @@ export function toPluginMessageContext(
   }
   if (canonical.runId) {
     context.runId = canonical.runId;
+  }
+  if ("agentId" in canonical && canonical.agentId) {
+    context.agentId = canonical.agentId;
   }
   if (canonical.messageId) {
     context.messageId = canonical.messageId;

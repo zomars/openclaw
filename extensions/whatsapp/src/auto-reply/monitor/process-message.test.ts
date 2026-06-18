@@ -354,6 +354,7 @@ describe("processMessage group system prompt wiring", () => {
       Surface: "whatsapp",
       OriginatingChannel: "whatsapp",
       OriginatingTo: GROUP_JID,
+      AgentId: baseRoute.agentId,
       GroupSubject: "Test Group",
     }));
 
@@ -404,6 +405,7 @@ describe("processMessage group system prompt wiring", () => {
         accountId: "default",
         conversationId: GROUP_JID,
         sessionKey: baseRoute.sessionKey,
+        agentId: baseRoute.agentId,
         messageId: "msg1",
         senderId: "+15550002222",
       },
