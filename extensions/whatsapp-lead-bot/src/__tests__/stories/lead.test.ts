@@ -55,6 +55,52 @@ function makeLead(overrides: Partial<Lead> = {}): Lead {
   };
 }
 
+function createMessageHandlerFixture(configOverrides: Parameters<typeof createTestConfig>[0] = {}) {
+  const { db } = createTestDb();
+  const runtime = createFakeRuntime();
+  const config = createTestConfig(configOverrides);
+  const notifier = new FakeNotifier();
+  const handoffManager = new HandoffManager(db, notifier);
+  const rateLimiter = new RateLimiter(db, {
+    enabled: true,
+    messagesPerHour: 10,
+    windowMs: 3600000,
+  });
+  const globalLimiter = new GlobalRateLimiter(db, {
+    enabled: true,
+    maxMessagesPerHour: 1000,
+    windowMs: 3600000,
+  });
+  const circuitBreaker = new CircuitBreaker(
+    db,
+    { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 10 },
+    notifier,
+  );
+  const rateLimitCoordinator = new RateLimitCoordinator(
+    circuitBreaker,
+    globalLimiter,
+    rateLimiter,
+  );
+  const mediaHandler = new MediaHandler();
+  const agentNotifier = new AgentNotifier(runtime, config);
+  const adminHandler = new AdminCommandHandler(db, handoffManager, rateLimiter, null, null);
+  const handoffInterceptor = new HandoffInterceptor({ agentNotifier });
+  const handler = createMessageReceivedHandler({
+    db,
+    config,
+    adminHandler,
+    rateLimiter,
+    rateLimitCoordinator,
+    mediaHandler,
+    agentNotifier,
+    handoffManager,
+    handoffInterceptor,
+  });
+  const wrappedHandler = withContext(() => runtime, (_deps: {}) => handler)({});
+
+  return { db, runtime, wrappedHandler };
+}
+
 describe("Lead / Customer Stories", () => {
   it("1. auto-qualifies leads via bot conversation (name, location, property type, ownership, bill)", async () => {
     // Test the full message-received pipeline: a new lead message gets processed,
@@ -124,6 +170,49 @@ describe("Lead / Customer Stories", () => {
     const lead = await db.getLeadByPhone("+5216671999999");
     expect(lead).not.toBeNull();
     expect(lead!.status).toBe("new");
+  });
+
+  it("consumes owner self-chat admin commands before sibling agent dispatch", async () => {
+    const { runtime, wrappedHandler } = createMessageHandlerFixture({
+      whatsappAccounts: ["acct-1"],
+      agentId: "solayre-leads",
+    });
+
+    const result = await wrappedHandler(
+      {
+        from: "+5216672350818",
+        content: "/recent 1",
+        timestamp: Date.now(),
+        metadata: {
+          to: "+5216672350818",
+          sentByAccountOwner: true,
+        },
+      },
+      { channelId: "whatsapp", accountId: "acct-1", agentId: "solayre-coworker" },
+    );
+
+    expect(result).toEqual({ suppress: true });
+    expect(runtime.sentMessages).toHaveLength(1);
+    expect(runtime.sentMessages[0]?.to).toBe("+5216672350818");
+  });
+
+  it("does not run the lead pipeline for non-admin sibling agent messages", async () => {
+    const { db, wrappedHandler } = createMessageHandlerFixture({
+      whatsappAccounts: ["acct-1"],
+      agentId: "solayre-leads",
+    });
+
+    const result = await wrappedHandler(
+      {
+        from: "+5216672350818",
+        content: "mensaje interno normal",
+        timestamp: Date.now(),
+      },
+      { channelId: "whatsapp", accountId: "acct-1", agentId: "solayre-coworker" },
+    );
+
+    expect(result).toEqual({});
+    await expect(db.getLeadByPhone("+5216672350818")).resolves.toBeNull();
   });
 
   it("2. auto-computes lead score (HOT/WARM/COLD/OUT) based on location, bill amount, and ownership", () => {

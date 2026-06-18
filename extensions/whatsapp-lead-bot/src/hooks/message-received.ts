@@ -47,6 +47,10 @@ interface LeadMessageInput extends MessageInput {
   lead: Lead;
 }
 
+function isPrimaryAgentRoute(config: WhatsAppLeadBotConfig, ctx: PluginHookMessageContext): boolean {
+  return !config.agentId || !ctx.agentId || ctx.agentId === config.agentId;
+}
+
 export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
   // --- Pre-lead filters (before lead lookup) ---
 
@@ -262,6 +266,10 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
       if (result !== null) {
         return result;
       }
+    }
+
+    if (!isPrimaryAgentRoute(deps.config, ctx)) {
+      return {};
     }
 
     // --- Lead lookup ---
