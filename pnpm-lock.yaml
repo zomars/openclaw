@@ -81,27 +81,9 @@ importers:
       '@mozilla/readability':
         specifier: 0.6.0
         version: 0.6.0
-      '@openclaw/acp-core':
-        specifier: workspace:*
-        version: link:packages/acp-core
       '@openclaw/fs-safe':
         specifier: 0.3.0
         version: 0.3.0
-      '@openclaw/llm-core':
-        specifier: workspace:*
-        version: link:packages/llm-core
-      '@openclaw/media-core':
-        specifier: workspace:*
-        version: link:packages/media-core
-      '@openclaw/model-catalog-core':
-        specifier: workspace:*
-        version: link:packages/model-catalog-core
-      '@openclaw/net-policy':
-        specifier: workspace:*
-        version: link:packages/net-policy
-      '@openclaw/normalization-core':
-        specifier: workspace:*
-        version: link:packages/normalization-core
       '@openclaw/proxyline':
         specifier: 0.3.3
         version: 0.3.3(undici@8.3.0)

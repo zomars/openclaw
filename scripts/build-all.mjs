@@ -211,6 +211,13 @@ export const BUILD_ALL_PROFILES = {
 export const BUILD_ALL_PROFILE_STEP_ENV = {
   full: {
     tsdown: {
+      // Skip tsdown's own dts pass: published .d.ts come from the tsgo
+      // build:plugin-sdk:dts + write-plugin-sdk-entry-dts steps, not from
+      // dist/*.d.ts. tsdown's dts (Oxc resolver) also can't survive vite's
+      // @ts-ignore'd `import type esbuild` once it follows a test-only type
+      // graph. ciArtifacts (the publish build) already skips it; keep full
+      // aligned so the runtime bundle and SDK types still build.
+      OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1",
       OPENCLAW_PRESERVE_CLI_STARTUP_METADATA: "1",
     },
   },
