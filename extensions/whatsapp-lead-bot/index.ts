@@ -10,10 +10,12 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendWebChannelMessage } from "../../src/plugins/runtime/runtime-web-channel-plugin.js";
 import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import { AdminCommandHandler } from "./src/admin/commands.js";
 import { createParseAndQuoteClient } from "./src/cfe/parse-and-quote-client.js";
+import { QuoteDeliveryWorker } from "./src/cfe/quote-delivery-worker.js";
 import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
 import { SqliteDatabase } from "./src/database/connection.js";
@@ -36,6 +38,10 @@ import { RateLimitCoordinator } from "./src/rate-limit/coordinator.js";
 import { GlobalRateLimiter } from "./src/rate-limit/global-limiter.js";
 import { RateLimiter } from "./src/rate-limit/limiter.js";
 import type { Runtime } from "./src/runtime.js";
+import {
+  sendLeadBotWhatsAppMessage,
+  type WhatsAppSendMessageFn,
+} from "./src/runtime/send-whatsapp.js";
 import { FileSessionResetter } from "./src/session-resetter/file-resetter.js";
 import { blockLeadTool } from "./src/tools/block-lead.js";
 import { getFollowupCandidatesTool } from "./src/tools/get-followup-candidates.js";
@@ -51,14 +57,72 @@ import { sendHandoffToAleTool } from "./src/tools/send-handoff-to-ale.js";
 import { sendReceiptRequestTool } from "./src/tools/send-receipt-request.js";
 import { syncLabelsTool } from "./src/tools/sync-labels.js";
 import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
-const plugin = {
+import { whatsappNativeHistoryProbeTool } from "./src/tools/whatsapp-native-history-probe.js";
+
+type LeadBotToolDefinition<TParams = unknown, TCtx = unknown> = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  execute: (params: any, ctx: any) => Promise<unknown>;
+};
+
+const DISCOVERY_TOOLS: Array<{ label: string; tool: LeadBotToolDefinition }> = [
+  { label: "Process CFE Receipt (Customer)", tool: processLeadCFEReceiptTool },
+  { label: "Save Lead", tool: saveLeadTool },
+  { label: "Get Lead", tool: getLeadTool },
+  { label: "List Leads", tool: listLeadsTool },
+  { label: "Get Followup Candidates", tool: getFollowupCandidatesTool },
+  { label: "Handoff Lead", tool: handoffLeadTool },
+  { label: "Block Lead", tool: blockLeadTool },
+  { label: "Send Disqualification", tool: sendDisqualificationTool },
+  { label: "Send Receipt Request", tool: sendReceiptRequestTool },
+  { label: "Send Handoff to Ale", tool: sendHandoffToAleTool },
+  { label: "Save Receipt Data", tool: saveReceiptDataTool },
+  { label: "Sync Labels", tool: syncLabelsTool },
+  { label: "Get Labels", tool: getLabelsTool },
+  { label: "Create Label", tool: createLabelTool },
+  { label: "Add Chat Label", tool: addChatLabelTool },
+  { label: "Fetch WhatsApp History", tool: whatsappHistoryFetchTool },
+  { label: "Probe Native WhatsApp History (Prototype)", tool: whatsappNativeHistoryProbeTool },
+];
+
+function registerToolDiscoveryStubs(api: OpenClawPluginApi) {
+  for (const { label, tool } of DISCOVERY_TOOLS) {
+    api.registerTool({
+      name: tool.name,
+      label,
+      description: tool.description,
+      parameters: tool.inputSchema,
+      execute: async () => {
+        const result = {
+          success: false,
+          error: "whatsapp-lead-bot tool execution requires full plugin runtime",
+        };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          details: result,
+        };
+      },
+    });
+  }
+}
+
+const plugin = definePluginEntry({
   id: "whatsapp-lead-bot",
   name: "WhatsApp Lead Bot",
   description:
     "AI-powered lead qualification bot for WhatsApp with admin commands, rate limiting, and follow-ups",
-  configSchema: WhatsAppLeadBotConfigSchema,
+  configSchema: WhatsAppLeadBotConfigSchema as never,
 
   register(api: OpenClawPluginApi) {
+    if (api.registrationMode === "tool-discovery") {
+      registerToolDiscoveryStubs(api);
+      return;
+    }
+    if (api.registrationMode !== "full") {
+      return;
+    }
+
     const config = WhatsAppLeadBotConfigSchema.parse(api.pluginConfig);
 
     if (!config.enabled) {
@@ -67,19 +131,20 @@ const plugin = {
     }
 
     // Resolve database path
-    const stateDir = api.runtime?.stateDir;
+    const stateDir = (api.runtime as { stateDir?: string } | undefined)?.stateDir;
     if (!config.dbPath && !stateDir) {
       console.error(
         "[whatsapp-lead-bot] Neither config.dbPath nor api.runtime.stateDir is available",
       );
       return;
     }
-    const dbPath = config.dbPath || path.join(stateDir, "whatsapp-lead-bot", "leads.db");
+    const dbPath = config.dbPath ?? path.join(stateDir!, "whatsapp-lead-bot", "leads.db");
 
     // Initialize database (better-sqlite3 is synchronous)
     const db = new SqliteDatabase({ dbPath });
     db.migrate();
     console.log(`[whatsapp-lead-bot] Database initialized at ${dbPath}`);
+    const apiWithUnload = api as unknown as { onUnload?: (fn: () => void) => void };
 
     // Wire dependencies (DI composition root)
     const rateLimiter = new RateLimiter(db, config.rateLimit);
@@ -89,6 +154,7 @@ const plugin = {
       | { whatsapp?: Record<string, (...args: unknown[]) => unknown> }
       | undefined;
     const waFns = waRuntime?.whatsapp;
+    const sendMessageWhatsApp = waFns?.sendMessageWhatsApp as WhatsAppSendMessageFn | undefined;
 
     // Create runtime adapter factory for sending messages from specific accounts
     const getRuntime = (accountId?: string): Runtime => {
@@ -99,13 +165,22 @@ const plugin = {
         ) {
           console.log(`[lead-bot] Sending message TO ${to} FROM accountId="${accountId}"`);
           try {
-            await sendWebChannelMessage(to, content.text, {
-              verbose: false,
-              cfg: api.runtime.config?.current?.() ?? api.config,
-              accountId: accountId,
+            await sendLeadBotWhatsAppMessage({
+              to,
+              text: content.text,
+              mediaUrl:
+                typeof content.metadata?.filePath === "string"
+                  ? content.metadata.filePath
+                  : undefined,
+              cfg: (api.runtime.config?.current?.() ?? api.config) as never,
+              accountId,
+              dryRunPrefixes: config.dryRunPrefixes,
+              sendMessageWhatsApp,
+              fallbackSendWebChannelMessage: sendWebChannelMessage as never,
             });
           } catch (err) {
-            console.error("[lead-bot] sendWebChannelMessage failed:", err);
+            console.error("[lead-bot] sendMessage failed:", err);
+            throw err;
           }
         },
         async addChatLabel(chatJid: string, labelId: string) {
@@ -131,7 +206,9 @@ const plugin = {
         async getLabels() {
           try {
             if (typeof waFns?.getLabelsWhatsApp === "function") {
-              return await waFns?.getLabelsWhatsApp({ accountId });
+              return (await waFns?.getLabelsWhatsApp({ accountId })) as Awaited<
+                ReturnType<NonNullable<Runtime["getLabels"]>>
+              >;
             }
           } catch (err) {
             console.error("[lead-bot] getLabels failed:", err);
@@ -141,9 +218,9 @@ const plugin = {
         async createLabel(name: string, color: number) {
           try {
             if (typeof waFns?.createLabelWhatsApp === "function") {
-              return await waFns?.createLabelWhatsApp(name, color, {
+              return (await waFns?.createLabelWhatsApp(name, color, {
                 accountId,
-              });
+              })) as Awaited<ReturnType<NonNullable<Runtime["createLabel"]>>>;
             }
           } catch (err) {
             console.error("[lead-bot] createLabel failed:", err);
@@ -185,9 +262,9 @@ const plugin = {
         async onWhatsApp(...phoneNumbers: string[]) {
           try {
             if (typeof waFns?.onWhatsApp === "function") {
-              return await waFns?.onWhatsApp(...phoneNumbers, {
+              return (await waFns?.onWhatsApp(...phoneNumbers, {
                 accountId,
-              });
+              })) as Awaited<ReturnType<NonNullable<Runtime["onWhatsApp"]>>>;
             }
           } catch (err) {
             console.error("[lead-bot] onWhatsApp failed:", err);
@@ -248,7 +325,7 @@ const plugin = {
     // Get self E.164 number for admin detection
     // This will need to be retrieved from OpenClaw's WhatsApp channel
     // For now, we'll pass null and admin detection will be disabled
-    const selfE164: string | null = null; // TODO: Get from api.runtime or config
+    const selfE164: string | null = null;
 
     // Wire session resetter for /reset-lead command
     const openclawStateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
@@ -291,7 +368,7 @@ const plugin = {
         agentNotifier,
         handoffManager,
         handoffInterceptor,
-      }),
+      }) as never,
     );
 
     api.on(
@@ -366,8 +443,8 @@ const plugin = {
     console.log("[whatsapp-lead-bot] Hooks registered");
 
     // Clean up DB on plugin unload
-    if (typeof api.onUnload === "function") {
-      api.onUnload(() => {
+    if (typeof apiWithUnload.onUnload === "function") {
+      apiWithUnload.onUnload(() => {
         db.close();
       });
     }
@@ -450,13 +527,26 @@ const plugin = {
       };
 
       registerPluginTool("Process CFE Receipt (Customer)", processLeadCFEReceiptTool, {
-        parseAndQuote: (input) => parseAndQuoteClient.quote(input),
+        submitReceipt: (input) => parseAndQuoteClient.submitReceipt(input),
+        createPendingQuoteJob: (input) => db.createPendingQuoteJob(input),
+        runtime,
+      });
+
+      const quoteDeliveryWorker = new QuoteDeliveryWorker({
+        store: db,
+        checkRequest: (requestId, options) => parseAndQuoteClient.checkRequest(requestId, options),
         saveLead: saveLeadDep,
         saveQuoteId: saveQuoteIdDep,
         downloadFile: downloadFileDep,
         runtime,
         outputDir: cfeOutputDir,
+        agentPhones: config.agentNumbers,
       });
+      quoteDeliveryWorker.start();
+      if (typeof apiWithUnload.onUnload === "function") {
+        apiWithUnload.onUnload(() => quoteDeliveryWorker.stop());
+      }
+      console.log("[whatsapp-lead-bot] Quote delivery worker started");
     }
 
     // Register lead management tools
@@ -490,6 +580,13 @@ const plugin = {
     registerPluginTool("Create Label", createLabelTool, { runtime });
     registerPluginTool("Add Chat Label", addChatLabelTool, { runtime });
     registerPluginTool("Fetch WhatsApp History", whatsappHistoryFetchTool, { db });
+    registerPluginTool(
+      "Probe Native WhatsApp History (Prototype)",
+      whatsappNativeHistoryProbeTool,
+      {
+        db,
+      },
+    );
 
     console.log("[whatsapp-lead-bot] Plugin registered successfully");
 
@@ -526,7 +623,6 @@ const plugin = {
       });
     };
     rawSubscribers.add(rawCallback);
-    const apiWithUnload = api as unknown as { onUnload?: (fn: () => void) => void };
     if (typeof apiWithUnload.onUnload === "function") {
       apiWithUnload.onUnload(() => rawSubscribers.delete(rawCallback));
     }
@@ -646,6 +742,6 @@ const plugin = {
     }
     console.log("[lead-bot] DM history loader registered");
   },
-};
+});
 
 export default plugin;
