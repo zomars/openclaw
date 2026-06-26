@@ -15,6 +15,13 @@ async function makeLead(
     handed_off_at?: number | null;
     blocked_at?: number | null;
     rate_limited_at?: number | null;
+    receipt_data?: string | null;
+    annual_kwh?: number | null;
+    panels_quoted?: number | null;
+    quote_cash?: number | null;
+    quote_financed?: number | null;
+    quoted_at?: number | null;
+    pendingQuoteJobStatus?: "pending" | "delivered" | "failed";
     /** Set to true to simulate a lead that was imported (no inbound message) — excluded from followup */
     noInbound?: boolean;
   },
@@ -42,6 +49,34 @@ async function makeLead(
       fields.rate_limited_at ?? null,
       lead.id,
     );
+  sql
+    .prepare(
+      "UPDATE leads SET receipt_data=?, annual_kwh=?, panels_quoted=?, quote_cash=?, quote_financed=?, quoted_at=? WHERE id=?",
+    )
+    .run(
+      fields.receipt_data ?? null,
+      fields.annual_kwh ?? null,
+      fields.panels_quoted ?? null,
+      fields.quote_cash ?? null,
+      fields.quote_financed ?? null,
+      fields.quoted_at ?? null,
+      lead.id,
+    );
+  if (fields.pendingQuoteJobStatus) {
+    sql
+      .prepare(
+        "INSERT INTO pending_quote_jobs (request_id, customer_phone, media_path, status, next_poll_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        `req-${lead.id}`,
+        lead.phone_number,
+        `/tmp/receipt-${lead.id}.pdf`,
+        fields.pendingQuoteJobStatus,
+        now,
+        now,
+        now,
+      );
+  }
   // Insert an inbound message unless explicitly excluded (simulating imported-only leads)
   if (!fields.noInbound) {
     // peer_e164 must match the normalized phone stored in the leads table
@@ -120,11 +155,56 @@ describe("get_followup_candidates", () => {
       status: "handed_off",
       lastMessageDaysAgo: 10,
     });
+    // Ineligible: already has parsed CFE receipt data
+    await makeLead(db, "+5216670000012", {
+      score: "HOT",
+      status: "new",
+      lastMessageDaysAgo: 10,
+      receipt_data: JSON.stringify({ serviceNumber: "123456789012" }),
+    });
+    // Ineligible: already has annual consumption from a CFE receipt
+    await makeLead(db, "+5216670000013", {
+      score: "HOT",
+      status: "new",
+      lastMessageDaysAgo: 10,
+      annual_kwh: 7579,
+    });
+    // Ineligible: already has quote data
+    await makeLead(db, "+5216670000014", {
+      score: "HOT",
+      status: "new",
+      lastMessageDaysAgo: 10,
+      panels_quoted: 10,
+      quote_cash: 150000,
+      quote_financed: 165000,
+      quoted_at: Date.now() - DAY,
+    });
+    // Ineligible: quote delivery is already queued
+    await makeLead(db, "+5216670000015", {
+      score: "HOT",
+      status: "new",
+      lastMessageDaysAgo: 10,
+      pendingQuoteJobStatus: "pending",
+    });
+    // Ineligible: quote delivery already completed
+    await makeLead(db, "+5216670000016", {
+      score: "HOT",
+      status: "new",
+      lastMessageDaysAgo: 10,
+      pendingQuoteJobStatus: "delivered",
+    });
+    // Eligible: failed quote job can still be followed up by the normal rules
+    const failedJobLead = await makeLead(db, "+5216670000017", {
+      score: "HOT",
+      status: "new",
+      lastMessageDaysAgo: 10,
+      pendingQuoteJobStatus: "failed",
+    });
 
     const result = await getFollowupCandidatesTool.execute({}, { db });
     expect(result.success).toBe(true);
     const phones = result.leads.map((l) => l.phone_number).toSorted();
-    expect(phones).toEqual([eligible1, eligible2].toSorted());
+    expect(phones).toEqual([eligible1, eligible2, failedJobLead].toSorted());
   });
 
   it("returns leads ordered by last_message_at ASC (oldest first) and respects limit", async () => {

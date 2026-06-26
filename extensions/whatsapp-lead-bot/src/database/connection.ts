@@ -504,6 +504,12 @@ export class SqliteDatabase implements DatabaseInterface {
            AND l.handed_off_at IS NULL
            AND l.blocked_at IS NULL
            AND l.rate_limited_at IS NULL
+           AND l.receipt_data IS NULL
+           AND l.annual_kwh IS NULL
+           AND l.panels_quoted IS NULL
+           AND l.quote_cash IS NULL
+           AND l.quote_financed IS NULL
+           AND l.quoted_at IS NULL
            AND LENGTH(REPLACE(l.phone_number, '+', '')) BETWEEN 10 AND 15
            AND REPLACE(l.phone_number, '+', '') GLOB '[0-9]*'
            AND REPLACE(l.phone_number, '+', '') NOT GLOB '*[^0-9]*'
@@ -511,6 +517,11 @@ export class SqliteDatabase implements DatabaseInterface {
              SELECT 1 FROM messages m
              WHERE REPLACE(m.peer_e164, '+', '') = REPLACE(l.phone_number, '+', '')
                AND m.from_me = 0
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM pending_quote_jobs pqj
+             WHERE REPLACE(pqj.customer_phone, '+', '') = REPLACE(l.phone_number, '+', '')
+               AND pqj.status IN ('pending', 'delivered')
            )
          ORDER BY l.last_message_at ASC
          LIMIT ?`,
