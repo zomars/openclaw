@@ -5,11 +5,16 @@
   "description": "AI-powered lead qualification bot for WhatsApp with admin commands, rate limiting, and follow-ups",
   "author": "OpenClaw",
   "license": "MIT",
+  "activation": {
+    "onStartup": true
+  },
   "contracts": {
     "tools": [
       "add_chat_label",
       "block_lead",
       "create_label",
+      "crm_memory_backfill",
+      "crm_sync_backfill",
       "get_followup_candidates",
       "get_labels",
       "get_lead",
@@ -22,12 +27,31 @@
       "send_handoff_to_ale",
       "send_receipt_request",
       "sync_labels",
-      "whatsapp_history_fetch"
+      "whatsapp_history_fetch",
+      "whatsapp_native_history_probe"
     ]
   },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
+    "$defs": {
+      "secretRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": ["env", "file", "exec"]
+          },
+          "provider": { "type": "string" },
+          "id": { "type": "string" }
+        },
+        "required": ["source", "provider", "id"]
+      },
+      "secretInput": {
+        "anyOf": [{ "type": "string", "minLength": 1 }, { "$ref": "#/$defs/secretRef" }]
+      }
+    },
     "properties": {
       "enabled": {
         "type": "boolean"
@@ -40,7 +64,7 @@
       "agentNumbers": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "Phones that receive bot alerts (handoff, new lead, rate-limit). Outbound notifications only — admin commands gate on metadata.sentByAccountOwner."
+        "description": "Trusted operator phones that receive bot alerts and may invoke admin commands for configured WhatsApp accounts."
       },
       "dryRunPrefixes": {
         "type": "array",
@@ -108,6 +132,32 @@
       "notifyHandoff": {
         "type": "boolean"
       },
+      "eventWebhook": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact plugin HTTP route that receives signed quote completion events."
+          },
+          "signingSecret": {
+            "$ref": "#/$defs/secretInput",
+            "description": "HMAC signing secret or SecretRef used to verify inbound quote events."
+          },
+          "replayWindowMs": { "type": "number" },
+          "maxBodyBytes": { "type": "number" },
+          "rateLimit": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "maxRequests": { "type": "number" },
+              "windowMs": { "type": "number" }
+            }
+          }
+        }
+      },
       "receiptExtraction": {
         "type": "object",
         "additionalProperties": false,
@@ -119,6 +169,18 @@
           "maxAttemptsPerLead": { "type": "number" },
           "maxFileSizeMB": { "type": "number" },
           "timeoutSeconds": { "type": "number" }
+        }
+      },
+      "crmMemory": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "mirrorEnabled": { "type": "boolean" },
+          "eventWritesEnabled": { "type": "boolean" },
+          "contextReadsEnabled": { "type": "boolean" },
+          "cronGateEnabled": { "type": "boolean" },
+          "adminStatusEnabled": { "type": "boolean" }
         }
       }
     }

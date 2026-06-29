@@ -12,12 +12,16 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendWebChannelMessage } from "../../src/plugins/runtime/runtime-web-channel-plugin.js";
-import type { OpenClawPluginApi } from "../../src/plugins/types.js";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "../../src/plugins/types.js";
 import { AdminCommandHandler } from "./src/admin/commands.js";
+import { createQuoteEventWebhookHandler } from "./src/cfe/event-webhook.js";
 import { createParseAndQuoteClient } from "./src/cfe/parse-and-quote-client.js";
+import { createQuoteAccessTokenClient } from "./src/cfe/quote-access-client.js";
 import { QuoteDeliveryWorker } from "./src/cfe/quote-delivery-worker.js";
 import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
+import { createLovableCrmClient } from "./src/crm-sync/lovable-client.js";
+import { CrmSyncWorker } from "./src/crm-sync/worker.js";
 import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
 import { createAttributionOverrideHandler } from "./src/hooks/attribution-override.js";
@@ -44,6 +48,8 @@ import {
 } from "./src/runtime/send-whatsapp.js";
 import { FileSessionResetter } from "./src/session-resetter/file-resetter.js";
 import { blockLeadTool } from "./src/tools/block-lead.js";
+import { crmMemoryBackfillTool } from "./src/tools/crm-memory-backfill.js";
+import { crmSyncBackfillTool } from "./src/tools/crm-sync-backfill.js";
 import { getFollowupCandidatesTool } from "./src/tools/get-followup-candidates.js";
 import { getLeadTool } from "./src/tools/get-lead.js";
 import { handoffLeadTool } from "./src/tools/handoff-lead.js";
@@ -59,11 +65,10 @@ import { syncLabelsTool } from "./src/tools/sync-labels.js";
 import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
 import { whatsappNativeHistoryProbeTool } from "./src/tools/whatsapp-native-history-probe.js";
 
-type LeadBotToolDefinition<TParams = unknown, TCtx = unknown> = {
+type LeadBotToolDefinition = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  execute: (params: any, ctx: any) => Promise<unknown>;
 };
 
 const DISCOVERY_TOOLS: Array<{ label: string; tool: LeadBotToolDefinition }> = [
@@ -74,6 +79,8 @@ const DISCOVERY_TOOLS: Array<{ label: string; tool: LeadBotToolDefinition }> = [
   { label: "Get Followup Candidates", tool: getFollowupCandidatesTool },
   { label: "Handoff Lead", tool: handoffLeadTool },
   { label: "Block Lead", tool: blockLeadTool },
+  { label: "CRM Memory Backfill", tool: crmMemoryBackfillTool },
+  { label: "CRM Sync Backfill", tool: crmSyncBackfillTool },
   { label: "Send Disqualification", tool: sendDisqualificationTool },
   { label: "Send Receipt Request", tool: sendReceiptRequestTool },
   { label: "Send Handoff to Ale", tool: sendHandoffToAleTool },
@@ -312,6 +319,7 @@ const plugin = definePluginEntry({
     if (!cfeApiKey) {
       console.warn("[whatsapp-lead-bot] No SUPABASE_API_KEY — process_lead_cfe_receipt disabled");
     }
+    const crmSyncApiKey = process.env.CFE_PARSER_API_KEY ?? process.env.SUPABASE_API_KEY;
 
     // Wire 3-layer rate limiting
     const globalLimiter = new GlobalRateLimiter(db, config.rateLimit.global);
@@ -340,6 +348,7 @@ const plugin = definePluginEntry({
 
     const messageQueue = new MessageQueue();
     const labelService = new WhatsAppLabelService(config.labels, db);
+    let crmSyncWorker: CrmSyncWorker | null = null;
 
     const adminHandler = new AdminCommandHandler(
       db,
@@ -350,6 +359,7 @@ const plugin = definePluginEntry({
       circuitBreaker,
       globalLimiter,
       labelService,
+      config.crmMemory,
     );
 
     // Register hooks wrapped with request context (accountId → runtime)
@@ -368,6 +378,7 @@ const plugin = definePluginEntry({
         agentNotifier,
         handoffManager,
         handoffInterceptor,
+        crmSyncWake: () => crmSyncWorker?.wake(),
       }) as never,
     );
 
@@ -442,6 +453,39 @@ const plugin = definePluginEntry({
 
     console.log("[whatsapp-lead-bot] Hooks registered");
 
+    if (config.crmSync.enabled && (config.crmSync.pushEnabled || config.crmSync.pullEnabled)) {
+      if (!crmSyncApiKey) {
+        console.warn(
+          "[whatsapp-lead-bot] CRM sync disabled: missing CFE_PARSER_API_KEY or SUPABASE_API_KEY",
+        );
+      } else {
+        crmSyncWorker = new CrmSyncWorker(
+          {
+            store: db,
+            client: createLovableCrmClient({
+              saveLeadUrl: config.crmSync.saveLeadUrl,
+              listLeadsUrl: config.crmSync.listLeadsUrl,
+              apiKey: crmSyncApiKey,
+            }),
+          },
+          {
+            pushIntervalMs: config.crmSync.pushIntervalMs,
+            pullIntervalMs: config.crmSync.pullIntervalMs,
+            batchSize: config.crmSync.batchSize,
+            maxAttempts: config.crmSync.maxAttempts,
+            pushEnabled: config.crmSync.pushEnabled,
+            pullEnabled: config.crmSync.pullEnabled,
+          },
+        );
+        crmSyncWorker.start();
+        if (typeof apiWithUnload.onUnload === "function") {
+          const worker = crmSyncWorker;
+          apiWithUnload.onUnload(() => worker?.stop());
+        }
+        console.log("[whatsapp-lead-bot] Lovable CRM sync worker started");
+      }
+    }
+
     // Clean up DB on plugin unload
     if (typeof apiWithUnload.onUnload === "function") {
       apiWithUnload.onUnload(() => {
@@ -489,10 +533,18 @@ const plugin = definePluginEntry({
         apiUrl: config.parseAndQuoteUrl,
         editQuoteUrl: config.editQuoteUrl,
       });
+      const quoteAccessClient = config.quoteAccess.enabled
+        ? createQuoteAccessTokenClient({
+            apiKey: cfeApiKey,
+            tokenUrl: config.quoteAccess.createTokenUrl,
+            publicBaseUrl: config.quoteAccess.publicBaseUrl,
+            expiresInDays: config.quoteAccess.expiresInDays,
+          })
+        : null;
       const saveLeadDep = async (input: { phone: string; name: string; notes?: string }) => {
         const result = (await saveLeadTool.execute(
           { phone: input.phone, name: input.name, notes: input.notes },
-          { db, labelService, runtime },
+          { db, labelService, runtime, config },
         )) as { success: boolean; lead?: { id: number } };
         if (!result.success || !result.lead) {
           throw new Error("save_lead returned no lead");
@@ -526,15 +578,58 @@ const plugin = definePluginEntry({
         return destPath;
       };
 
-      registerPluginTool("Process CFE Receipt (Customer)", processLeadCFEReceiptTool, {
-        submitReceipt: (input) => parseAndQuoteClient.submitReceipt(input),
-        createPendingQuoteJob: (input) => db.createPendingQuoteJob(input),
-        runtime,
-      });
+      api.registerTool((toolCtx: OpenClawPluginToolContext) => ({
+        name: processLeadCFEReceiptTool.name,
+        label: "Process CFE Receipt (Customer)",
+        description: processLeadCFEReceiptTool.description,
+        parameters: processLeadCFEReceiptTool.inputSchema,
+        execute: async (_toolCallId: string, params) => {
+          const result = await processLeadCFEReceiptTool.execute(params as never, {
+            submitReceipt: (input) => parseAndQuoteClient.submitReceipt(input),
+            createPendingQuoteJob: (input) => db.createPendingQuoteJob(input),
+            agentSessionKey: toolCtx.sessionKey ?? null,
+            agentSessionId: toolCtx.sessionId ?? null,
+            invokingAgentId: toolCtx.agentId ?? null,
+            runtime,
+          });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+            details: result,
+          };
+        },
+      }));
+      console.log(`[whatsapp-lead-bot] Registered tool: ${processLeadCFEReceiptTool.name}`);
+
+      if (config.eventWebhook.enabled) {
+        if (!config.eventWebhook.signingSecret) {
+          console.warn(
+            "[whatsapp-lead-bot] eventWebhook enabled without signingSecret; route not registered",
+          );
+        } else {
+          api.registerHttpRoute({
+            path: config.eventWebhook.path,
+            auth: "plugin",
+            match: "exact",
+            handler: createQuoteEventWebhookHandler({
+              cfg: (api.runtime.config?.current?.() ?? api.config) as never,
+              pluginConfig: config,
+              store: db,
+              sessionWorkflow: api.session.workflow,
+              log: console,
+            }),
+          });
+          console.log(
+            `[whatsapp-lead-bot] Quote event webhook registered at ${config.eventWebhook.path}`,
+          );
+        }
+      }
 
       const quoteDeliveryWorker = new QuoteDeliveryWorker({
         store: db,
+        eventLog: db,
+        config,
         checkRequest: (requestId, options) => parseAndQuoteClient.checkRequest(requestId, options),
+        quoteAccess: quoteAccessClient,
         saveLead: saveLeadDep,
         saveQuoteId: saveQuoteIdDep,
         downloadFile: downloadFileDep,
@@ -550,17 +645,20 @@ const plugin = definePluginEntry({
     }
 
     // Register lead management tools
-    registerPluginTool("Save Lead", saveLeadTool, { db, labelService, runtime });
+    registerPluginTool("Save Lead", saveLeadTool, { db, labelService, runtime, config });
+    registerPluginTool("CRM Memory Backfill", crmMemoryBackfillTool, { db });
+    registerPluginTool("CRM Sync Backfill", crmSyncBackfillTool, { crmSyncWorker });
     registerPluginTool("Get Lead", getLeadTool, { db });
     registerPluginTool("List Leads", listLeadsTool, { db });
-    registerPluginTool("Get Followup Candidates", getFollowupCandidatesTool, { db });
+    registerPluginTool("Get Followup Candidates", getFollowupCandidatesTool, { db, config });
     registerPluginTool("Handoff Lead", handoffLeadTool, {
       db,
       labelService,
       runtime,
       agentNotifier,
+      config,
     });
-    registerPluginTool("Block Lead", blockLeadTool, { db });
+    registerPluginTool("Block Lead", blockLeadTool, { db, config });
     registerPluginTool("Send Disqualification", sendDisqualificationTool, {
       db,
       labelService,
@@ -574,7 +672,7 @@ const plugin = definePluginEntry({
       handoffManager,
       agentNumbers: config.agentNumbers,
     });
-    registerPluginTool("Save Receipt Data", saveReceiptDataTool, { db });
+    registerPluginTool("Save Receipt Data", saveReceiptDataTool, { db, config });
     registerPluginTool("Sync Labels", syncLabelsTool, { db, labelService, runtime });
     registerPluginTool("Get Labels", getLabelsTool, { runtime });
     registerPluginTool("Create Label", createLabelTool, { runtime });

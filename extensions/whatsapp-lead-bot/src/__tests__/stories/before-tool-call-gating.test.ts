@@ -117,11 +117,11 @@ describe("before_tool_call tool gating", () => {
   it("does not gate when invoking agent does not match expectedAgentId", async () => {
     const { db } = createTestDb();
     // Lead in QUOTED state — would normally block process_lead_cfe_receipt.
-    await db.upsertLead("526671000066", {
+    const lead = await db.upsertLead("526671000066", {
       name: "Coworker",
-      status: "qualified",
       panels_quoted: 12,
     });
+    await db.updateLeadStatus(lead.id, "qualified");
 
     const handler = createBeforeToolCallHandler({ db, expectedAgentId: "solayre-leads" });
     const result = await handler(

@@ -91,11 +91,11 @@ describe("before_prompt_build handler", () => {
   it("returns nothing when invoking agent does not match expectedAgentId", async () => {
     const { db } = createTestDb();
     // Lead exists for the phone — would normally trigger state injection.
-    await db.upsertLead("526671000099", {
+    const lead = await db.upsertLead("526671000099", {
       name: "Coworker",
-      status: "qualified",
       panels_quoted: 12,
     });
+    await db.updateLeadStatus(lead.id, "qualified");
     const handler = createBeforePromptBuildHandler({ db, expectedAgentId: "solayre-leads" });
     const result = await handler(
       { prompt: "", messages: [] },

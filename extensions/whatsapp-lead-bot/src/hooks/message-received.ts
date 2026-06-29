@@ -6,6 +6,9 @@
 import type { AdminCommandHandler } from "../admin/commands.js";
 import type { WhatsAppLeadBotConfig } from "../config/schema.js";
 import { getContext } from "../context.js";
+import { appendLeadEvent } from "../crm-memory/lead-events.js";
+import { resolveTrustedWhatsAppLeadScope } from "../crm-memory/lead-scope.js";
+import { resolveCrmMemoryRolloutFlags } from "../crm-memory/rollout.js";
 import type { Database } from "../database.js";
 import type { Lead } from "../database/schema.js";
 import type { HandoffManager } from "../handoff/manager.js";
@@ -32,6 +35,7 @@ export interface MessageReceivedHandlerDeps {
   agentNotifier: AgentNotifier;
   handoffManager: HandoffManager;
   handoffInterceptor: HandoffInterceptor;
+  crmSyncWake?: () => void;
 }
 
 /** Result from a filter step: return a value to short-circuit, or null to continue. */
@@ -52,6 +56,11 @@ function isPrimaryAgentRoute(
   ctx: PluginHookMessageContext,
 ): boolean {
   return !config.agentId || !ctx.agentId || ctx.agentId === config.agentId;
+}
+
+function isConfiguredAgentNumber(config: WhatsAppLeadBotConfig, phone: string): boolean {
+  const normalizedPhone = normalizePhone(phone);
+  return config.agentNumbers.some((agentNumber) => normalizePhone(agentNumber) === normalizedPhone);
 }
 
 export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
@@ -84,21 +93,24 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     return null;
   }
 
-  async function filterOwnerAdminCommand({ event, runtime }: MessageInput): Promise<FilterResult> {
+  async function filterAdminCommand({ event, runtime }: MessageInput): Promise<FilterResult> {
     const { from, content, metadata } = event;
     const to = metadata?.to as string | undefined;
     const sentByAccountOwner = metadata?.sentByAccountOwner === true;
-    const sameNumber = !!to && normalizePhone(from) === normalizePhone(to);
+    const sameNumber = Boolean(to) && normalizePhone(from) === normalizePhone(to);
+    const configuredAgentNumber = isConfiguredAgentNumber(deps.config, from);
+    const adminSource =
+      sentByAccountOwner || sameNumber || configuredAgentNumber || deps.adminHandler.isAdmin(from);
 
     console.log(
-      `[message-received] Owner admin check: from=${from}, to=${to}, sameNumber=${sameNumber}, sentByAccountOwner=${sentByAccountOwner}`,
+      `[message-received] Admin check: from=${from}, to=${to}, sameNumber=${sameNumber}, sentByAccountOwner=${sentByAccountOwner}, configuredAgentNumber=${configuredAgentNumber}`,
     );
 
-    if (!sentByAccountOwner) {
+    if (!adminSource) {
       return null;
     }
 
-    console.log(`[message-received] Detected owner message, parsing command: "${content}"`);
+    console.log(`[message-received] Detected admin message, parsing command: "${content}"`);
     const command = deps.adminHandler.parseCommand(content);
     console.log(`[message-received] Parsed command:`, command);
 
@@ -201,7 +213,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     }
 
     console.log(
-      `[message-received] Checking media: mediaType=${mediaType}, hasMediaHandler=${!!deps.mediaHandler}, metadata keys=${Object.keys(metadata || {}).join(",")}`,
+      `[message-received] Checking media: mediaType=${mediaType}, hasMediaHandler=${Boolean(deps.mediaHandler)}, metadata keys=${Object.keys(metadata || {}).join(",")}`,
     );
 
     if (!mediaType || mediaType === "text/plain") {
@@ -230,7 +242,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     return { suppress: result.suppress, content: result.content };
   }
 
-  function filterSlashCommand({ event }: LeadMessageInput): FilterResult {
+  function filterSlashCommand({ event }: MessageInput): FilterResult {
     if (event.content.trimStart().startsWith("/")) {
       return { suppress: true };
     }
@@ -259,11 +271,16 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     );
 
     // Async pre-lead filters
-    for (const filter of [filterOwnerAdminCommand, filterWhatsAppWebHandoff] as const) {
+    for (const filter of [filterAdminCommand, filterWhatsAppWebHandoff] as const) {
       const result = await filter(input);
       if (result !== null) {
         return result;
       }
+    }
+
+    const preRouteSlashResult = filterSlashCommand(input);
+    if (preRouteSlashResult !== null) {
+      return preRouteSlashResult;
     }
 
     if (!isPrimaryAgentRoute(deps.config, ctx)) {
@@ -271,8 +288,16 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     }
 
     // --- Lead lookup ---
-    let lead = await deps.db.getOrCreateLead(event.from);
+    const leadScope = resolveTrustedWhatsAppLeadScope({ event, ctx });
+    if (!leadScope.ok) {
+      console.log(`[lead-bot] Skipping lead lookup: ${leadScope.reason}`);
+      return leadScope.reason === "not_whatsapp" ? {} : { suppress: true };
+    }
+
+    let lead = await deps.db.getOrCreateLead(leadScope.scope.leadPhone);
     await deps.db.updateLeadTimestamp(lead.id, event.timestamp || Date.now());
+    appendInboundCrmMessageEvent({ event, lead, leadScope });
+    deps.crmSyncWake?.();
 
     // Re-fetch lead to ensure we have the latest status (race condition fix)
     // In case handoff was triggered between getOrCreateLead and now
@@ -288,7 +313,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
             ctwa_clid: ctwaClid,
             ctwa_clid_captured_at: Date.now(),
           });
-          console.log(`[lead-bot] Captured ctwa_clid for ${event.from}`);
+          console.log(`[lead-bot] Captured ctwa_clid for ${leadScope.scope.leadPhone}`);
         }
       } catch (err) {
         console.error(`[lead-bot] Failed to save ctwa_clid:`, err);
@@ -332,6 +357,45 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
     return {};
   }
 
+  function appendInboundCrmMessageEvent(input: {
+    event: PluginHookMessageReceivedEvent;
+    lead: Lead;
+    leadScope: ReturnType<typeof resolveTrustedWhatsAppLeadScope>;
+  }): void {
+    const flags = resolveCrmMemoryRolloutFlags(deps.config.crmMemory);
+    if (!flags.eventWritesEnabled || !input.leadScope.ok) {
+      return;
+    }
+
+    try {
+      appendLeadEvent({
+        scope: input.leadScope,
+        log: deps.db,
+        now: () => input.event.timestamp || Date.now(),
+        event: {
+          type: "message.received",
+          actor: "prospect",
+          source: {
+            channel: "whatsapp",
+            messageId: firstString(input.event.metadata?.messageId),
+          },
+          summary: "Inbound WhatsApp message received.",
+          payload: {
+            leadId: input.lead.id,
+            content: input.event.content,
+            mediaType: firstString(
+              input.event.metadata?.mediaType,
+              input.event.metadata?.MediaType,
+            ),
+            hasMedia: Boolean(input.event.metadata?.mediaPath),
+          },
+        },
+      });
+    } catch (err) {
+      console.error(`[lead-bot] Failed to append CRM memory message event:`, err);
+    }
+  }
+
   // --- Hook entry point ---
 
   return async function onMessageReceived(
@@ -345,4 +409,8 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
       return { suppress: true };
     }
   };
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === "string" && value.length > 0);
 }

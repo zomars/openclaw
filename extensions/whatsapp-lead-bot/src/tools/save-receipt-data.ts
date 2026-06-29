@@ -4,7 +4,11 @@
  * Saves parsed CFE receipt data to a lead record.
  */
 
+import type { WhatsAppLeadBotConfig } from "../config/schema.js";
+import { appendResolvedLeadEvent } from "../crm-memory/lead-events.js";
+import { resolveCrmMemoryRolloutFlags } from "../crm-memory/rollout.js";
 import type { Database } from "../database.js";
+import { normalizePhone } from "../utils/phone.js";
 
 export const saveReceiptDataTool = {
   name: "save_receipt_data",
@@ -25,7 +29,7 @@ export const saveReceiptDataTool = {
   },
   execute: async (
     params: { phone: string; receipt_data: string; tariff?: string; annual_kwh?: number },
-    context: { db: Database },
+    context: { db: Database; config?: WhatsAppLeadBotConfig },
   ) => {
     const lead = await context.db.getLeadByPhone(params.phone);
     if (!lead) {
@@ -37,6 +41,12 @@ export const saveReceiptDataTool = {
       tariff: params.tariff,
       annual_kwh: params.annual_kwh,
     });
+    appendReceiptDataCrmEvent({
+      db: context.db,
+      config: context.config,
+      lead,
+      params,
+    });
 
     return {
       success: true,
@@ -46,3 +56,47 @@ export const saveReceiptDataTool = {
     };
   },
 };
+
+function appendReceiptDataCrmEvent(input: {
+  db: Database;
+  config?: WhatsAppLeadBotConfig;
+  lead: NonNullable<Awaited<ReturnType<Database["getLeadByPhone"]>>>;
+  params: { phone: string; receipt_data: string; tariff?: string; annual_kwh?: number };
+}): void {
+  const flags = resolveCrmMemoryRolloutFlags(input.config?.crmMemory);
+  if (!flags.eventWritesEnabled) {
+    return;
+  }
+
+  const leadPhone = normalizePhone(input.lead.phone_number || input.params.phone);
+  if (!leadPhone) {
+    return;
+  }
+
+  try {
+    appendResolvedLeadEvent({
+      scope: {
+        leadKey: `whatsapp:${leadPhone}`,
+        leadPhone,
+      },
+      log: input.db,
+      event: {
+        type: "tool.save_receipt_data",
+        actor: "tool",
+        source: {
+          channel: "tool",
+          toolName: "save_receipt_data",
+        },
+        summary: "Parsed CFE receipt data saved.",
+        payload: {
+          leadId: input.lead.id,
+          tariff: input.params.tariff ?? null,
+          annualKwh: input.params.annual_kwh ?? null,
+          receiptDataLength: input.params.receipt_data.length,
+        },
+      },
+    });
+  } catch (err) {
+    console.error(`[save_receipt_data] Failed to append CRM memory event:`, err);
+  }
+}

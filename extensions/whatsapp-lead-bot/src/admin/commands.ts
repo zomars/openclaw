@@ -3,6 +3,10 @@
  * Adding a command = add a parse case + register a handler.
  */
 
+import { renderAdminLeadStatus } from "../crm-memory/admin-status.js";
+import { readLeadContext } from "../crm-memory/lead-context.js";
+import type { TrustedWhatsAppLeadScope } from "../crm-memory/lead-scope.js";
+import { resolveCrmMemoryRolloutFlags, type CrmMemoryRolloutFlags } from "../crm-memory/rollout.js";
 import type { Database } from "../database.js";
 import type { Lead } from "../database/schema.js";
 import type { HandoffManager } from "../handoff/manager.js";
@@ -50,6 +54,7 @@ export class AdminCommandHandler {
     private circuitBreaker: CircuitBreaker | null = null,
     private globalLimiter: GlobalRateLimiter | null = null,
     private labelService: LabelService | null = null,
+    private crmMemory: Partial<CrmMemoryRolloutFlags> | null = null,
   ) {
     this.registerBuiltinHandlers();
   }
@@ -87,7 +92,9 @@ export class AdminCommandHandler {
   }
 
   isAdmin(phoneNumber: string): boolean {
-    if (!this.selfE164) {return false;}
+    if (!this.selfE164) {
+      return false;
+    }
     return normalizePhone(phoneNumber) === normalizePhone(this.selfE164);
   }
 
@@ -112,7 +119,9 @@ export class AdminCommandHandler {
 
   parseCommand(message: string): AdminCommand | null {
     const trimmed = this.stripUnicode(message.trim());
-    if (!trimmed.startsWith("/")) {return null;}
+    if (!trimmed.startsWith("/")) {
+      return null;
+    }
 
     const parts = trimmed.slice(1).split(/\s+/);
     const cmd = parts[0]?.toLowerCase();
@@ -121,52 +130,70 @@ export class AdminCommandHandler {
     switch (cmd) {
       case "status": {
         const [phone] = this.extractPhone(args);
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "status", phone };
       }
 
       case "block": {
         const [phone, rest] = this.extractPhone(args);
         const reason = rest.join(" ") || "No reason provided";
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "block", phone, reason };
       }
 
       case "unblock": {
         const [phone] = this.extractPhone(args);
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "unblock", phone };
       }
 
       case "handoff": {
         const [phone] = this.extractPhone(args);
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "handoff", phone };
       }
 
       case "takeback": {
         const [phone] = this.extractPhone(args);
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "takeback", phone };
       }
 
       case "reset-lead": {
         const [phone] = this.extractPhone(args);
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "reset-lead", phone };
       }
 
       case "clear-limit": {
         const [phone] = this.extractPhone(args);
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "clear-limit", phone };
       }
 
       case "score": {
         const [phone, rest] = this.extractPhone(args);
         const score = rest[0]?.toUpperCase();
-        if (!phone || !score) {return null;}
-        if (!["HOT", "WARM", "COLD", "OUT"].includes(score)) {return null;}
+        if (!phone || !score) {
+          return null;
+        }
+        if (!["HOT", "WARM", "COLD", "OUT"].includes(score)) {
+          return null;
+        }
         return { type: "score", phone, score };
       }
 
@@ -189,7 +216,9 @@ export class AdminCommandHandler {
 
       case "followup": {
         const [phone] = this.extractPhone(args);
-        if (!phone) {return null;}
+        if (!phone) {
+          return null;
+        }
         return { type: "followup", phone };
       }
 
@@ -213,7 +242,9 @@ export class AdminCommandHandler {
   async execute(command: AdminCommand, runtime?: Runtime): Promise<string> {
     try {
       const handler = this.handlers.get(command.type);
-      if (!handler) {return "Unknown command. Type /help for available commands.";}
+      if (!handler) {
+        return "Unknown command. Type /help for available commands.";
+      }
       return await handler(command, runtime);
     } catch (err) {
       console.error("[admin-commands] Execution error:", err);
@@ -225,7 +256,19 @@ export class AdminCommandHandler {
 
   private async handleStatus(phone: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
+
+    const flags = resolveCrmMemoryRolloutFlags(this.crmMemory ?? undefined);
+    if (flags.enabled && flags.adminStatusEnabled) {
+      const context = readLeadContext({
+        scope: this.buildAdminLeadScope(lead),
+        lead,
+        log: this.db,
+      });
+      return renderAdminLeadStatus({ trustedAdmin: true, context });
+    }
 
     const qualified = await this.db.isLeadQualified(lead.id);
 
@@ -234,7 +277,9 @@ export class AdminCommandHandler {
 
   private async handleBlock(phone: string, reason: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
     await this.db.blockLead(lead.id, reason);
     await this.db.logHandoffEvent(lead.id, "admin_block", "admin", { reason });
@@ -243,7 +288,9 @@ export class AdminCommandHandler {
 
   private async handleUnblock(phone: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
     await this.db.unblockLead(lead.id);
     await this.db.logHandoffEvent(lead.id, "admin_unblock", "admin");
@@ -252,7 +299,9 @@ export class AdminCommandHandler {
 
   private async handleHandoff(phone: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
     await this.handoffManager.triggerAdminHandoff(lead.id);
     return `✅ Handoff triggered for: ${phone}\nBot will stop responding.`;
@@ -260,7 +309,9 @@ export class AdminCommandHandler {
 
   private async handleTakeback(phone: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
     if (lead.status !== "handed_off") {
       return `Lead is not handed off (current status: ${lead.status})`;
@@ -276,7 +327,9 @@ export class AdminCommandHandler {
   }
 
   private async buildHandoffSummary(lead: Lead): Promise<string> {
-    if (!lead.handed_off_at) {return "";}
+    if (!lead.handed_off_at) {
+      return "";
+    }
 
     // Convert phone to WhatsApp JID format for message lookup
     const digits = normalizePhone(lead.phone_number).replace(/^\+/, "");
@@ -284,11 +337,15 @@ export class AdminCommandHandler {
 
     try {
       const messages = await this.db.getMessagesSince(chatJid, lead.handed_off_at);
-      if (messages.length === 0) {return "";}
+      if (messages.length === 0) {
+        return "";
+      }
 
       // Count inbound messages (from_me = 0) by type
       const inbound = messages.filter((m) => m.from_me === 0);
-      if (inbound.length === 0) {return "";}
+      if (inbound.length === 0) {
+        return "";
+      }
 
       const textCount = inbound.filter(
         (m) =>
@@ -306,8 +363,12 @@ export class AdminCommandHandler {
       const duration = formatTimeAgo(Date.now() - lead.handed_off_at);
       const lines: string[] = [`\n\nDuring handoff (${duration}):`];
 
-      if (textCount > 0) {lines.push(`- ${textCount} text message${textCount > 1 ? "s" : ""}`);}
-      if (mediaCount > 0) {lines.push(`- ${mediaCount} media file${mediaCount > 1 ? "s" : ""}`);}
+      if (textCount > 0) {
+        lines.push(`- ${textCount} text message${textCount > 1 ? "s" : ""}`);
+      }
+      if (mediaCount > 0) {
+        lines.push(`- ${mediaCount} media file${mediaCount > 1 ? "s" : ""}`);
+      }
 
       // Check if receipt was processed during handoff
       if (lead.receipt_data) {
@@ -332,7 +393,9 @@ export class AdminCommandHandler {
 
   private async handleResetLead(phone: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
     await this.db.resetLead(lead.id);
     await this.db.logHandoffEvent(lead.id, "admin_reset_lead", "admin");
@@ -354,7 +417,9 @@ export class AdminCommandHandler {
 
   private async handleClearLimit(phone: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
     await this.rateLimiter.clearLimit(lead.id);
     await this.db.updateLeadStatus(lead.id, "qualifying");
@@ -364,7 +429,9 @@ export class AdminCommandHandler {
 
   private async handleScore(phone: string, score: string, runtime?: Runtime): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
     await this.db.updateQualificationData(lead.id, { score });
     await this.db.logHandoffEvent(lead.id, "admin_score", "admin", { score });
@@ -382,7 +449,9 @@ export class AdminCommandHandler {
 
   private async handleRecent(count: number): Promise<string> {
     const leads = await this.db.getRecentLeads(count);
-    if (leads.length === 0) {return "No leads found.";}
+    if (leads.length === 0) {
+      return "No leads found.";
+    }
 
     const lines = leads.map((lead) => {
       const timeAgo = formatTimeAgo(Date.now() - lead.last_message_at);
@@ -417,7 +486,9 @@ export class AdminCommandHandler {
   }
 
   private async handleResetBreaker(): Promise<string> {
-    if (!this.circuitBreaker) {return "Circuit breaker is not enabled.";}
+    if (!this.circuitBreaker) {
+      return "Circuit breaker is not enabled.";
+    }
     await this.circuitBreaker.reset();
     return "✅ Circuit breaker reset. Bot responses restored.";
   }
@@ -455,7 +526,9 @@ export class AdminCommandHandler {
     ];
     if (changes.length > 0) {
       lines.push("", "Changes:", ...changes.slice(0, 20));
-      if (changes.length > 20) {lines.push(`... y ${changes.length - 20} más`);}
+      if (changes.length > 20) {
+        lines.push(`... y ${changes.length - 20} más`);
+      }
     } else {
       lines.push("No score changes needed.");
     }
@@ -477,7 +550,9 @@ export class AdminCommandHandler {
     for (let i = 0; i < allLeads.length; i++) {
       const lead = allLeads[i];
       const phone = lead.phone_number;
-      if (!phone || phone.length < 10) {continue;}
+      if (!phone || phone.length < 10) {
+        continue;
+      }
 
       const previousScore = lead.score ?? null;
       const newScore = computeScore({
@@ -501,7 +576,10 @@ export class AdminCommandHandler {
         }
       } catch (err: unknown) {
         errors++;
-        console.error(`[admin] sync-labels error for ${phone}:`, err instanceof Error ? err.message : String(err));
+        console.error(
+          `[admin] sync-labels error for ${phone}:`,
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
 
@@ -515,10 +593,16 @@ export class AdminCommandHandler {
 
   private async handleFollowup(phone: string): Promise<string> {
     const lead = await this.findLead(phone);
-    if (!lead) {return `Lead not found: ${phone}`;}
+    if (!lead) {
+      return `Lead not found: ${phone}`;
+    }
 
-    if (lead.status === "blocked") {return `❌ Lead está bloqueado: ${phone}`;}
-    if (lead.status === "handed_off") {return `⚠️ Lead está en handoff. Usa /takeback primero.`;}
+    if (lead.status === "blocked") {
+      return `❌ Lead está bloqueado: ${phone}`;
+    }
+    if (lead.status === "handed_off") {
+      return `⚠️ Lead está en handoff. Usa /takeback primero.`;
+    }
 
     // Reset follow_up_sent_at so the lead becomes eligible for the next follow-up cycle
     await this.db.updateFollowUpSentAt(lead.id, 0);
@@ -540,7 +624,9 @@ export class AdminCommandHandler {
     });
 
     const pending = [...newLeads, ...allLeads].filter((lead) => {
-      if (!lead.last_message_at) {return false;}
+      if (!lead.last_message_at) {
+        return false;
+      }
       // No bot reply yet, or lead messaged after bot's last reply
       return !lead.last_bot_reply_at || lead.last_message_at > lead.last_bot_reply_at;
     });
@@ -606,9 +692,24 @@ export class AdminCommandHandler {
     }
     for (const candidate of candidates) {
       const lead = await this.db.getLeadByPhone(candidate);
-      if (lead) {return lead;}
+      if (lead) {
+        return lead;
+      }
     }
     return null;
+  }
+
+  private buildAdminLeadScope(lead: Lead): TrustedWhatsAppLeadScope {
+    const leadPhone = normalizePhone(lead.phone_number);
+    return {
+      ok: true,
+      scope: {
+        leadPhone,
+        leadKey: `whatsapp:${leadPhone}`,
+        source: "metadata.senderE164",
+        audit: {},
+      },
+    };
   }
 
   private formatDate(timestamp: number): string {

@@ -1,4 +1,7 @@
+import { buildSecretInputSchema } from "openclaw/plugin-sdk/secret-input";
 import { z } from "zod";
+
+const SecretInputSchema = buildSecretInputSchema();
 
 const zodSchema = z.object({
   enabled: z.boolean().default(true),
@@ -6,11 +9,9 @@ const zodSchema = z.object({
   // WhatsApp account filtering
   whatsappAccounts: z.array(z.string()).default(["default"]),
 
-  // Agent notification settings (outbound only).
-  // Phones that receive bot alerts (handoffs, new lead notifications,
-  // rate-limit warnings, etc.). Source-of-trust for admin commands moved to
-  // metadata.sentByAccountOwner — agentNumbers is no longer trusted as an
-  // input channel.
+  // Trusted operator phones. These receive bot alerts (handoffs, new lead
+  // notifications, rate-limit warnings, etc.) and may issue admin slash
+  // commands from WhatsApp self-chat/operator routes.
   agentNumbers: z.array(z.string()).default([]),
 
   // Phone prefixes for eval/dry-run mode — messages to matching numbers skip WhatsApp delivery
@@ -143,6 +144,103 @@ const zodSchema = z.object({
     .string()
     .url()
     .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/calculate-quote"),
+
+  quoteAccess: z
+    .object({
+      enabled: z.boolean().default(true),
+      createTokenUrl: z
+        .string()
+        .url()
+        .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/create-quote-token"),
+      publicBaseUrl: z.string().url().default("https://solayre.lovable.app"),
+      expiresInDays: z.number().int().positive().max(365).default(30),
+    })
+    .default({
+      enabled: true,
+      createTokenUrl: "https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/create-quote-token",
+      publicBaseUrl: "https://solayre.lovable.app",
+      expiresInDays: 30,
+    }),
+
+  eventWebhook: z
+    .object({
+      enabled: z.boolean().default(false),
+      path: z.string().min(1).default("/plugins/whatsapp-lead-bot/quote-events"),
+      signingSecret: SecretInputSchema.optional(),
+      replayWindowMs: z.number().int().positive().default(300_000),
+      maxBodyBytes: z
+        .number()
+        .int()
+        .positive()
+        .default(64 * 1024),
+      rateLimit: z
+        .object({
+          maxRequests: z.number().int().positive().default(120),
+          windowMs: z.number().int().positive().default(60_000),
+        })
+        .default({
+          maxRequests: 120,
+          windowMs: 60_000,
+        }),
+    })
+    .default({
+      enabled: false,
+      path: "/plugins/whatsapp-lead-bot/quote-events",
+      replayWindowMs: 300_000,
+      maxBodyBytes: 64 * 1024,
+      rateLimit: {
+        maxRequests: 120,
+        windowMs: 60_000,
+      },
+    }),
+
+  crmSync: z
+    .object({
+      enabled: z.boolean().default(true),
+      pushEnabled: z.boolean().default(true),
+      pullEnabled: z.boolean().default(false),
+      saveLeadUrl: z
+        .string()
+        .url()
+        .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/save-lead"),
+      listLeadsUrl: z
+        .string()
+        .url()
+        .default("https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/list-leads"),
+      pushIntervalMs: z.number().int().positive().default(60_000),
+      pullIntervalMs: z.number().int().positive().default(120_000),
+      batchSize: z.number().int().positive().max(100).default(25),
+      maxAttempts: z.number().int().positive().default(12),
+    })
+    .default({
+      enabled: true,
+      pushEnabled: true,
+      pullEnabled: false,
+      saveLeadUrl: "https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/save-lead",
+      listLeadsUrl: "https://itdpiofbltvdumbznyyj.supabase.co/functions/v1/list-leads",
+      pushIntervalMs: 60_000,
+      pullIntervalMs: 120_000,
+      batchSize: 25,
+      maxAttempts: 12,
+    }),
+
+  crmMemory: z
+    .object({
+      enabled: z.boolean().default(false),
+      mirrorEnabled: z.boolean().default(false),
+      eventWritesEnabled: z.boolean().default(false),
+      contextReadsEnabled: z.boolean().default(false),
+      cronGateEnabled: z.boolean().default(false),
+      adminStatusEnabled: z.boolean().default(false),
+    })
+    .default({
+      enabled: false,
+      mirrorEnabled: false,
+      eventWritesEnabled: false,
+      contextReadsEnabled: false,
+      cronGateEnabled: false,
+      adminStatusEnabled: false,
+    }),
 });
 
 export type WhatsAppLeadBotConfig = z.infer<typeof zodSchema>;

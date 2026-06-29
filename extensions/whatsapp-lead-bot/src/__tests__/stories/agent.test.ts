@@ -1,40 +1,74 @@
 import { describe, it, expect } from "vitest";
 import { AdminCommandHandler } from "../../admin/commands.js";
-import { AgentNotifier } from "../../notifications/agent-notify.js";
+import { appendResolvedLeadEvent } from "../../crm-memory/lead-events.js";
+import type { CrmMemoryRolloutFlags } from "../../crm-memory/rollout.js";
+import type { Lead } from "../../database/schema.js";
 import { HandoffManager } from "../../handoff/manager.js";
 import { HandoffInterceptor } from "../../hooks/handoff-interceptor.js";
-import { RateLimiter } from "../../rate-limit/limiter.js";
+import { WhatsAppLabelService } from "../../labels.js";
+import { AgentNotifier } from "../../notifications/agent-notify.js";
 import { CircuitBreaker } from "../../rate-limit/circuit-breaker.js";
 import { GlobalRateLimiter } from "../../rate-limit/global-limiter.js";
-import { WhatsAppLabelService } from "../../labels.js";
-import type { Lead } from "../../database/schema.js";
-import { createTestDb } from "../helpers/tmp-db.js";
-import { createTestConfig } from "../helpers/test-config.js";
-import { createFakeRuntime } from "../helpers/fake-runtime.js";
+import { RateLimiter } from "../../rate-limit/limiter.js";
+import { normalizePhone } from "../../utils/phone.js";
 import { FakeNotifier } from "../helpers/fake-notifier.js";
+import { createFakeRuntime } from "../helpers/fake-runtime.js";
+import { createTestConfig } from "../helpers/test-config.js";
+import { createTestDb } from "../helpers/tmp-db.js";
 
 function makeLead(overrides: Partial<Lead> = {}): Lead {
   return {
-    id: 1, phone_number: "+5216671000000", status: "new",
-    created_at: Date.now(), updated_at: Date.now(),
-    first_contact_at: Date.now(), last_message_at: Date.now(),
-    last_bot_reply_at: null, handed_off_at: null, blocked_at: null,
-    rate_limited_at: null, follow_up_sent_at: null, quoted_at: null,
-    assigned_agent: null, blocked_reason: null, language: null,
-    name: null, location: null, property_type: null, ownership: null,
-    bimonthly_bill: null, score: null, panels_quoted: null,
-    quote_cash: null, quote_financed: null, notes: null,
-    receipt_data: null, tariff: null, annual_kwh: null,
-    rate_limit_count: 0, rate_limit_window_start: 0, custom_fields: null,
+    id: 1,
+    phone_number: "+5216671000000",
+    status: "new",
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    first_contact_at: Date.now(),
+    last_message_at: Date.now(),
+    last_bot_reply_at: null,
+    handed_off_at: null,
+    blocked_at: null,
+    rate_limited_at: null,
+    follow_up_sent_at: null,
+    quoted_at: null,
+    assigned_agent: null,
+    blocked_reason: null,
+    language: null,
+    name: null,
+    location: null,
+    property_type: null,
+    ownership: null,
+    bimonthly_bill: null,
+    score: null,
+    panels_quoted: null,
+    quote_cash: null,
+    quote_financed: null,
+    notes: null,
+    receipt_data: null,
+    tariff: null,
+    annual_kwh: null,
+    rate_limit_count: 0,
+    rate_limit_window_start: 0,
+    follow_up_attempts: 0,
+    survey_sent_at: null,
+    instagram_reminder_sent_at: null,
+    custom_fields: "{}",
     ...overrides,
   };
 }
 
-function createAdminHandler(opts?: { labelService?: WhatsAppLabelService | null }) {
+function createAdminHandler(opts?: {
+  labelService?: WhatsAppLabelService | null;
+  crmMemory?: Partial<CrmMemoryRolloutFlags> | null;
+}) {
   const { db } = createTestDb();
   const notifier = new FakeNotifier();
   const handoffManager = new HandoffManager(db, notifier);
-  const rateLimiter = new RateLimiter(db, { enabled: true, messagesPerHour: 10, windowMs: 3600000 });
+  const rateLimiter = new RateLimiter(db, {
+    enabled: true,
+    messagesPerHour: 10,
+    windowMs: 3600000,
+  });
   const circuitBreaker = new CircuitBreaker(
     db,
     { enabled: true, hitRateThreshold: 0.8, windowMs: 300000, minChecks: 5 },
@@ -54,6 +88,7 @@ function createAdminHandler(opts?: { labelService?: WhatsAppLabelService | null 
     circuitBreaker,
     globalLimiter,
     opts?.labelService ?? null,
+    opts?.crmMemory ?? null,
   );
   return { handler, db, notifier, circuitBreaker, globalLimiter, rateLimiter };
 }
@@ -96,7 +131,10 @@ describe("Agent / Admin Stories", () => {
       annual_kwh: null,
       rate_limit_count: 0,
       rate_limit_window_start: 0,
-      custom_fields: null,
+      follow_up_attempts: 0,
+      survey_sent_at: null,
+      instagram_reminder_sent_at: null,
+      custom_fields: "{}",
     };
 
     await notifier.notifyNewLead(lead);
@@ -123,7 +161,10 @@ describe("Agent / Admin Stories", () => {
     expect(runtime.sentMessages.length).toBe(2);
 
     runtime.sentMessages.length = 0;
-    const silentConfig = createTestConfig({ notifyNewLeads: false, agentNumbers: ["+15551111111"] });
+    const silentConfig = createTestConfig({
+      notifyNewLeads: false,
+      agentNumbers: ["+15551111111"],
+    });
     const silentNotifier = new AgentNotifier(runtime, silentConfig);
     await silentNotifier.notifyNewLead(lead);
     expect(runtime.sentMessages.length).toBe(0);
@@ -132,18 +173,51 @@ describe("Agent / Admin Stories", () => {
   it("13. /status shows lead full profile and qualification data", () => {
     const { db } = createTestDb();
     const handoffManager = new HandoffManager(db);
-    const rateLimiter = new RateLimiter(db, { enabled: true, messagesPerHour: 10, windowMs: 3600000 });
+    const rateLimiter = new RateLimiter(db, {
+      enabled: true,
+      messagesPerHour: 10,
+      windowMs: 3600000,
+    });
     const handler = new AdminCommandHandler(db, handoffManager, rateLimiter, null, null);
 
-    expect(handler.parseCommand("/status +5216671234567")).toEqual({ type: "status", phone: "526671234567" });
-    expect(handler.parseCommand("/block +5216671234567 spam")).toEqual({ type: "block", phone: "526671234567", reason: "spam" });
-    expect(handler.parseCommand("/unblock +5216671234567")).toEqual({ type: "unblock", phone: "526671234567" });
-    expect(handler.parseCommand("/handoff +5216671234567")).toEqual({ type: "handoff", phone: "526671234567" });
-    expect(handler.parseCommand("/takeback +5216671234567")).toEqual({ type: "takeback", phone: "526671234567" });
-    expect(handler.parseCommand("/reset-lead +5216671234567")).toEqual({ type: "reset-lead", phone: "526671234567" });
-    expect(handler.parseCommand("/clear-limit +5216671234567")).toEqual({ type: "clear-limit", phone: "526671234567" });
-    expect(handler.parseCommand("/followup +5216671234567")).toEqual({ type: "followup", phone: "526671234567" });
-    expect(handler.parseCommand("/score +5216671234567 HOT")).toEqual({ type: "score", phone: "526671234567", score: "HOT" });
+    expect(handler.parseCommand("/status +5216671234567")).toEqual({
+      type: "status",
+      phone: "526671234567",
+    });
+    expect(handler.parseCommand("/block +5216671234567 spam")).toEqual({
+      type: "block",
+      phone: "526671234567",
+      reason: "spam",
+    });
+    expect(handler.parseCommand("/unblock +5216671234567")).toEqual({
+      type: "unblock",
+      phone: "526671234567",
+    });
+    expect(handler.parseCommand("/handoff +5216671234567")).toEqual({
+      type: "handoff",
+      phone: "526671234567",
+    });
+    expect(handler.parseCommand("/takeback +5216671234567")).toEqual({
+      type: "takeback",
+      phone: "526671234567",
+    });
+    expect(handler.parseCommand("/reset-lead +5216671234567")).toEqual({
+      type: "reset-lead",
+      phone: "526671234567",
+    });
+    expect(handler.parseCommand("/clear-limit +5216671234567")).toEqual({
+      type: "clear-limit",
+      phone: "526671234567",
+    });
+    expect(handler.parseCommand("/followup +5216671234567")).toEqual({
+      type: "followup",
+      phone: "526671234567",
+    });
+    expect(handler.parseCommand("/score +5216671234567 HOT")).toEqual({
+      type: "score",
+      phone: "526671234567",
+      score: "HOT",
+    });
     expect(handler.parseCommand("/score +5216671234567 INVALID")).toBeNull();
     expect(handler.parseCommand("/recent")).toEqual({ type: "recent", count: 5 });
     expect(handler.parseCommand("/recent 20")).toEqual({ type: "recent", count: 20 });
@@ -158,6 +232,85 @@ describe("Agent / Admin Stories", () => {
     expect(handler.parseCommand("/unknown")).toBeNull();
     expect(handler.parseCommand("not a command")).toBeNull();
     expect(handler.parseCommand("/status")).toBeNull();
+  });
+
+  it("13b. /status uses CRM memory admin status when enabled", async () => {
+    const { handler, db } = createAdminHandler({
+      crmMemory: {
+        enabled: true,
+        adminStatusEnabled: true,
+      },
+    });
+    const lead = await db.getOrCreateLead("+5216671000072");
+    const leadPhone = normalizePhone(lead.phone_number);
+
+    appendResolvedLeadEvent({
+      scope: {
+        leadKey: `whatsapp:${leadPhone}`,
+        leadPhone,
+      },
+      log: db,
+      now: () => 1782319000000,
+      event: {
+        type: "receipt.received",
+        actor: "tool",
+        source: {
+          channel: "whatsapp",
+          toolName: "process_lead_cfe_receipt",
+        },
+        summary: "Receipt parsed for admin status.",
+        payload: {
+          bimonthlyBill: 3450,
+          artifact: {
+            id: "receipt-admin",
+            type: "cfe_receipt",
+            pointer: "cfe/receipt-admin.pdf",
+          },
+        },
+      },
+    });
+
+    const result = await handler.execute({ type: "status", phone: lead.phone_number });
+
+    expect(result).toContain("**CRM Lead Status**");
+    expect(result).toContain(`Phone: ${leadPhone}`);
+    expect(result).toContain("Bill: 3450");
+    expect(result).toContain("Artifacts: 1");
+    expect(result).toContain("Timeline events: 1");
+    expect(result).toContain("Next: review_receipt_and_quote");
+  });
+
+  it("13c. /status keeps legacy output by default", async () => {
+    const { handler, db } = createAdminHandler();
+    const lead = await db.getOrCreateLead("+5216671000073");
+    await db.updateQualificationData(lead.id, {
+      name: "Legacy Lead",
+      location: "Culiacán",
+      bimonthly_bill: 2100,
+      score: "WARM",
+    });
+
+    const result = await handler.execute({ type: "status", phone: lead.phone_number });
+
+    expect(result).toContain("**Lead Status**");
+    expect(result).toContain("Name: Legacy Lead");
+    expect(result).toContain("Score: WARM");
+    expect(result).not.toContain("**CRM Lead Status**");
+  });
+
+  it("13d. /status keeps legacy output when CRM admin status is disabled", async () => {
+    const { handler, db } = createAdminHandler({
+      crmMemory: {
+        enabled: true,
+        adminStatusEnabled: false,
+      },
+    });
+    const lead = await db.getOrCreateLead("+5216671000074");
+
+    const result = await handler.execute({ type: "status", phone: lead.phone_number });
+
+    expect(result).toContain("**Lead Status**");
+    expect(result).not.toContain("**CRM Lead Status**");
   });
 
   it("14. /recent lists N most recent leads with status and time since last message", async () => {
@@ -211,7 +364,11 @@ describe("Agent / Admin Stories", () => {
     await db.getOrCreateLead("+5216671000020");
 
     // Block
-    const blockResult = await handler.execute({ type: "block", phone: "526671000020", reason: "spam" });
+    const blockResult = await handler.execute({
+      type: "block",
+      phone: "526671000020",
+      reason: "spam",
+    });
     expect(blockResult).toContain("Blocked");
     const blocked = await db.getLeadByPhone("+5216671000020");
     expect(blocked!.status).toBe("blocked");
@@ -224,7 +381,11 @@ describe("Agent / Admin Stories", () => {
     expect(unblocked!.status).not.toBe("blocked");
 
     // Not found
-    const notFound = await handler.execute({ type: "block", phone: "999999999999", reason: "test" });
+    const notFound = await handler.execute({
+      type: "block",
+      phone: "999999999999",
+      reason: "test",
+    });
     expect(notFound).toContain("Lead not found");
   });
 
@@ -378,8 +539,18 @@ describe("Agent / Admin Stories", () => {
     const { handler, db } = createAdminHandler();
 
     // Create leads with scoring data
-    await db.upsertLead("526671000070", { name: "A", location: "Culiacán", ownership: "propia", bimonthly_bill: 2500 });
-    await db.upsertLead("526671000071", { name: "B", location: "Mazatlán", ownership: "propia", bimonthly_bill: 800 });
+    await db.upsertLead("526671000070", {
+      name: "A",
+      location: "Culiacán",
+      ownership: "propia",
+      bimonthly_bill: 2500,
+    });
+    await db.upsertLead("526671000071", {
+      name: "B",
+      location: "Mazatlán",
+      ownership: "propia",
+      bimonthly_bill: 800,
+    });
 
     const result = await handler.execute({ type: "sync-leads" });
     expect(result).toContain("Sync Leads");
@@ -401,7 +572,23 @@ describe("Agent / Admin Stories", () => {
     const result = await handler.execute({ type: "help" });
 
     expect(result).toContain("Admin Commands");
-    for (const cmd of ["/status", "/block", "/unblock", "/handoff", "/takeback", "/reset-lead", "/clear-limit", "/score", "/recent", "/pending", "/pause", "/resume", "/followup", "/rate-status", "/help"]) {
+    for (const cmd of [
+      "/status",
+      "/block",
+      "/unblock",
+      "/handoff",
+      "/takeback",
+      "/reset-lead",
+      "/clear-limit",
+      "/score",
+      "/recent",
+      "/pending",
+      "/pause",
+      "/resume",
+      "/followup",
+      "/rate-status",
+      "/help",
+    ]) {
       expect(result).toContain(cmd);
     }
   });
@@ -440,7 +627,11 @@ describe("Agent / Admin Stories", () => {
     // Handed-off lead with receipt-type media (no cfeParseContext) → suppress + notifyHandoffCapture
     runtime.sentMessages.length = 0;
     const receiptResult = await interceptor.handle({
-      event: { from: "+5216671000090", content: "pdf", metadata: { mediaType: "application/pdf", mediaPath: "/fake/receipt.pdf" } },
+      event: {
+        from: "+5216671000090",
+        content: "pdf",
+        metadata: { mediaType: "application/pdf", mediaPath: "/fake/receipt.pdf" },
+      },
       lead,
     });
     expect(receiptResult).toEqual({ suppress: true });

@@ -5,16 +5,21 @@
  * and notifies configured agent numbers.
  */
 
+import type { WhatsAppLeadBotConfig } from "../config/schema.js";
+import { appendResolvedLeadEvent } from "../crm-memory/lead-events.js";
+import { resolveCrmMemoryRolloutFlags } from "../crm-memory/rollout.js";
 import type { Database } from "../database.js";
 import type { LabelService } from "../labels.js";
 import type { AgentNotifier } from "../notifications/agent-notify.js";
 import type { Runtime } from "../runtime.js";
+import { normalizePhone } from "../utils/phone.js";
 
 export interface HandoffLeadContext {
   db: Database;
   labelService: LabelService;
   runtime: Runtime;
   agentNotifier?: AgentNotifier;
+  config?: WhatsAppLeadBotConfig;
 }
 
 export const handoffLeadTool = {
@@ -53,6 +58,13 @@ export const handoffLeadTool = {
 
     // Notify agent numbers
     const updated = await db.getLeadById(lead.id);
+    appendHandoffCrmEvent({
+      db,
+      config: context.config,
+      phone: params.phone,
+      lead: updated ?? lead,
+      reason: params.reason,
+    });
     if (agentNotifier && updated) {
       try {
         await agentNotifier.notifyHandoff(updated, params.reason);
@@ -65,3 +77,49 @@ export const handoffLeadTool = {
     return { success: true, lead: updated };
   },
 };
+
+function appendHandoffCrmEvent(input: {
+  db: Database;
+  config?: WhatsAppLeadBotConfig;
+  phone: string;
+  lead: NonNullable<Awaited<ReturnType<Database["getLeadByPhone"]>>>;
+  reason?: string;
+}): void {
+  const flags = resolveCrmMemoryRolloutFlags(input.config?.crmMemory);
+  if (!flags.eventWritesEnabled) {
+    return;
+  }
+
+  const leadPhone = normalizePhone(input.lead.phone_number || input.phone);
+  if (!leadPhone) {
+    return;
+  }
+
+  try {
+    appendResolvedLeadEvent({
+      scope: {
+        leadKey: `whatsapp:${leadPhone}`,
+        leadPhone,
+      },
+      log: input.db,
+      event: {
+        type: "tool.handoff_lead",
+        actor: "tool",
+        source: {
+          channel: "tool",
+          toolName: "handoff_lead",
+        },
+        summary: "Lead handed off to a human agent.",
+        payload: {
+          leadId: input.lead.id,
+          reason: input.reason ?? null,
+          status: input.lead.status,
+          assignedAgent: input.lead.assigned_agent,
+          handedOffAt: input.lead.handed_off_at,
+        },
+      },
+    });
+  } catch (err) {
+    console.error(`[handoff_lead] Failed to append CRM memory event:`, err);
+  }
+}

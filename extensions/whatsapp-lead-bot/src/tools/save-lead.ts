@@ -5,10 +5,14 @@
  * bimonthly_bill, and ownership — never set by the LLM agent.
  */
 
+import type { WhatsAppLeadBotConfig } from "../config/schema.js";
+import { appendResolvedLeadEvent } from "../crm-memory/lead-events.js";
+import { resolveCrmMemoryRolloutFlags } from "../crm-memory/rollout.js";
 import type { Database } from "../database.js";
 import type { LabelService } from "../labels.js";
 import type { Runtime } from "../runtime.js";
 import { computeScore, isInSinaloa } from "../scoring.js";
+import { normalizePhone } from "../utils/phone.js";
 
 export const saveLeadTool = {
   name: "save_lead",
@@ -64,7 +68,12 @@ export const saveLeadTool = {
       survey_sent_at?: number;
       instagram_reminder_sent_at?: number;
     },
-    context: { db: Database; labelService: LabelService; runtime: Runtime },
+    context: {
+      db: Database;
+      labelService: LabelService;
+      runtime: Runtime;
+      config?: WhatsAppLeadBotConfig;
+    },
   ) => {
     const { phone, ...data } = params;
     const { db, labelService, runtime } = context;
@@ -142,6 +151,65 @@ export const saveLeadTool = {
     const updatedLead =
       newScore !== null && newScore !== lead.score ? await db.getLeadByPhone(phone) : lead;
 
+    appendSaveLeadCrmEvent({
+      db,
+      config: context.config,
+      phone,
+      lead: updatedLead ?? lead,
+      providedData: data,
+      previousScore,
+      computedScore: newScore,
+    });
+
     return { success: true, lead: updatedLead };
   },
 };
+
+function appendSaveLeadCrmEvent(input: {
+  db: Database;
+  config?: WhatsAppLeadBotConfig;
+  phone: string;
+  lead: NonNullable<Awaited<ReturnType<Database["getLeadByPhone"]>>>;
+  providedData: Record<string, unknown>;
+  previousScore: string | null;
+  computedScore: string | null;
+}): void {
+  const flags = resolveCrmMemoryRolloutFlags(input.config?.crmMemory);
+  if (!flags.eventWritesEnabled) {
+    return;
+  }
+
+  const leadPhone = normalizePhone(input.lead.phone_number || input.phone);
+  if (!leadPhone) {
+    return;
+  }
+
+  try {
+    appendResolvedLeadEvent({
+      scope: {
+        leadKey: `whatsapp:${leadPhone}`,
+        leadPhone,
+      },
+      log: input.db,
+      event: {
+        type: "tool.save_lead",
+        actor: "tool",
+        source: {
+          channel: "tool",
+          toolName: "save_lead",
+        },
+        summary: "Lead qualification data saved.",
+        payload: {
+          leadId: input.lead.id,
+          fields: Object.keys(input.providedData).sort(),
+          providedData: input.providedData,
+          previousScore: input.previousScore,
+          computedScore: input.computedScore,
+          currentScore: input.lead.score,
+        },
+      },
+    });
+  } catch (err) {
+    console.error(`[save_lead] Failed to append CRM memory event:`, err);
+  }
+}

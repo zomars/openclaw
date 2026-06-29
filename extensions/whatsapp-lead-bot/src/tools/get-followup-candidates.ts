@@ -7,7 +7,13 @@
  * already-exhausted lead through this tool.
  */
 
+import type { WhatsAppLeadBotConfig } from "../config/schema.js";
+import { appendResolvedLeadEvent } from "../crm-memory/lead-events.js";
+import { deriveLeadSnapshot } from "../crm-memory/lead-snapshot.js";
+import { resolveCrmMemoryRolloutFlags } from "../crm-memory/rollout.js";
 import type { Database } from "../database.js";
+import type { Lead } from "../database/schema.js";
+import { normalizePhone } from "../utils/phone.js";
 
 export const getFollowupCandidatesTool = {
   name: "get_followup_candidates",
@@ -49,9 +55,71 @@ export const getFollowupCandidatesTool = {
       minIdleMs?: number;
       maxAttempts?: number;
     },
-    context: { db: Database },
+    context: { db: Database; config?: WhatsAppLeadBotConfig },
   ) => {
     const leads = await context.db.getFollowupCandidates(params);
-    return { success: true, count: leads.length, leads };
+    const gatedLeads = applyCrmMemoryFollowupGate({
+      db: context.db,
+      config: context.config,
+      leads,
+    });
+    return { success: true, count: gatedLeads.length, leads: gatedLeads };
   },
 };
+
+function applyCrmMemoryFollowupGate(input: {
+  db: Database;
+  config?: WhatsAppLeadBotConfig;
+  leads: Lead[];
+}): Lead[] {
+  const flags = resolveCrmMemoryRolloutFlags(input.config?.crmMemory);
+  if (!flags.cronGateEnabled) {
+    return input.leads;
+  }
+
+  return input.leads.filter((lead) => {
+    const leadPhone = normalizePhone(lead.phone_number);
+    if (!leadPhone) {
+      return true;
+    }
+    const leadKey = `whatsapp:${leadPhone}`;
+    const snapshot = deriveLeadSnapshot({
+      lead,
+      events: input.db.read(leadKey),
+    });
+
+    if (!snapshot.locks.humanHandoff.active) {
+      return true;
+    }
+
+    if (flags.eventWritesEnabled) {
+      try {
+        appendResolvedLeadEvent({
+          scope: {
+            leadKey,
+            leadPhone,
+          },
+          log: input.db,
+          event: {
+            type: "followup.skipped",
+            actor: "cron",
+            source: {
+              channel: "tool",
+              toolName: "get_followup_candidates",
+            },
+            summary: "Automated follow-up candidate skipped by CRM memory context.",
+            payload: {
+              leadId: lead.id,
+              reason: "human_handoff_active",
+              assignedAgent: snapshot.locks.humanHandoff.assignedAgent,
+            },
+          },
+        });
+      } catch (err) {
+        console.error(`[get_followup_candidates] Failed to append CRM skip event:`, err);
+      }
+    }
+
+    return false;
+  });
+}

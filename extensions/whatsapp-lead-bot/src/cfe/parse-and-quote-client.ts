@@ -39,6 +39,15 @@ export interface ParseAndQuoteError {
   error: string;
 }
 
+export interface SubmitQuoteReceiptResult {
+  success: true;
+  requestId: string;
+}
+
+export type QuoteRequestCheckResult =
+  | { success: true; status: "queued" | "processing" }
+  | { success: true; status: "done"; result: ParseAndQuoteResult };
+
 export interface EditQuoteInput {
   /** Original quote folio (e.g. "SOL20260402-170c") OR quoteId UUID. */
   quoteNumber: string;
@@ -69,6 +78,14 @@ export interface EditQuoteResult {
 }
 
 export interface ParseAndQuoteClient {
+  submitReceipt(input: {
+    mediaPath: string;
+    phoneNumber: string;
+  }): Promise<SubmitQuoteReceiptResult | ParseAndQuoteError>;
+  checkRequest(
+    requestId: string,
+    options?: { waitMs?: number },
+  ): Promise<QuoteRequestCheckResult | ParseAndQuoteError>;
   quote(input: {
     mediaPath: string;
     phoneNumber: string;
@@ -111,15 +128,27 @@ function detectFileType(buffer: Buffer): { mime: string; ext: string } | null {
 }
 
 function num(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : NaN;
+  return typeof v === "number" && Number.isFinite(v) ? v : Number.NaN;
 }
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
+function derivePanelWattage(input: { panelCount: number; systemKw: number }): number {
+  if (!Number.isFinite(input.panelCount) || input.panelCount <= 0) {
+    return Number.NaN;
+  }
+  if (!Number.isFinite(input.systemKw) || input.systemKw <= 0) {
+    return Number.NaN;
+  }
+  return Math.round((input.systemKw * 1000) / input.panelCount);
+}
+
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function baseUrl(apiUrl: string): string {
@@ -127,6 +156,33 @@ function baseUrl(apiUrl: string): string {
   const url = new URL(apiUrl);
   url.pathname = url.pathname.replace(/\/parse-and-quote\/?$/, "");
   return url.toString().replace(/\/$/, "");
+}
+
+function buildReceiptForm(input: {
+  mediaPath: string;
+  phoneNumber: string;
+}): { success: true; form: FormData } | ParseAndQuoteError {
+  if (!input.mediaPath || !input.phoneNumber) {
+    return { success: false, error: "mediaPath and phoneNumber are required" };
+  }
+  if (!fs.existsSync(input.mediaPath)) {
+    return { success: false, error: `File not found: ${input.mediaPath}` };
+  }
+  const stats = fs.statSync(input.mediaPath);
+  if (stats.size > MAX_FILE_BYTES) {
+    return { success: false, error: `File too large: ${stats.size} bytes (max 10MB)` };
+  }
+  const buffer = fs.readFileSync(input.mediaPath);
+  const detected = detectFileType(buffer);
+  if (!detected) {
+    return { success: false, error: `Unsupported file type: ${input.mediaPath}` };
+  }
+
+  const form = new FormData();
+  const blob = new Blob([buffer], { type: detected.mime });
+  form.append("file", blob, `receipt.${detected.ext}`);
+  form.append("phone_number", input.phoneNumber);
+  return { success: true, form };
 }
 
 function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | ParseAndQuoteError {
@@ -143,24 +199,39 @@ function validateResult(json: Record<string, unknown>): ParseAndQuoteResult | Pa
   const paybackYears = num(q.paybackYears);
 
   const systemKw = num(q.actualInstalledPowerKw ?? q.installedPowerKw ?? q.systemKw);
-  const panelWattage = num(
+  const explicitPanelWattage = num(
     q.panelWattage ??
       q.panelWatts ??
       q.panelPowerW ??
       q.panelPowerWatts ??
       q.moduleWattage ??
+      q.selectedPanelWattage ??
       q.wattage,
   );
+  const panelWattage = Number.isFinite(explicitPanelWattage)
+    ? explicitPanelWattage
+    : derivePanelWattage({ panelCount, systemKw });
   const financedPrice = num(
-    q.financedPrice ?? q.financingPrice ?? q.financedTotal ?? q.totalFinancedPrice ?? q.creditPrice,
+    q.financedPrice ??
+      q.financingPrice ??
+      q.financedTotal ??
+      q.totalFinancedPrice ??
+      q.creditPrice ??
+      q.totalSystemCostMxn ??
+      q.listPrice,
   );
   const fomo25Years = num(
-    q.fomo25Years ?? q.twentyFiveYearCfeCost ?? q.cfeCost25Years ?? q.projectedCfeCost25Years,
+    q.fomo25Years ??
+      q.twentyFiveYearCfeCost ??
+      q.twentyFiveYearCostWithoutSolar ??
+      q.cfeCost25Years ??
+      q.projectedCfeCost25Years,
   );
   const roi25YearsPercent = num(
     q.roi25YearsPercent ??
       q.twentyFiveYearRoiPercent ??
       q.roiPercent25Years ??
+      q.roi ??
       q.return25YearsPercent,
   );
 
@@ -242,41 +313,23 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
   const base = baseUrl(deps.apiUrl);
 
   return {
-    async quote({ mediaPath, phoneNumber }) {
-      if (!mediaPath || !phoneNumber) {
-        return { success: false, error: "mediaPath and phoneNumber are required" };
-      }
-      if (!fs.existsSync(mediaPath)) {
-        return { success: false, error: `File not found: ${mediaPath}` };
-      }
-      const stats = fs.statSync(mediaPath);
-      if (stats.size > MAX_FILE_BYTES) {
-        return { success: false, error: `File too large: ${stats.size} bytes (max 10MB)` };
-      }
-      const buffer = fs.readFileSync(mediaPath);
-      const detected = detectFileType(buffer);
-      if (!detected) {
-        return { success: false, error: `Unsupported file type: ${mediaPath}` };
+    async submitReceipt(input) {
+      const built = buildReceiptForm(input);
+      if (!built.success) {
+        return built;
       }
 
-      const form = new FormData();
-      const blob = new Blob([buffer], { type: detected.mime });
-      form.append("file", blob, `receipt.${detected.ext}`);
-      form.append("phone_number", phoneNumber);
-
-      // Step 1: Submit — expect 202 with requestId
       let submitResponse: Response;
       try {
         submitResponse = await fetch(deps.apiUrl, {
           method: "POST",
           headers: { "X-API-Key": deps.apiKey },
-          body: form,
+          body: built.form,
         });
       } catch (err) {
         return { success: false, error: `network error: ${String(err)}` };
       }
 
-      // 4xx errors are synchronous failures
       if (submitResponse.status >= 400 && submitResponse.status < 500) {
         let body = "";
         try {
@@ -309,69 +362,104 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
         return { success: false, error: "submit response missing requestId" };
       }
 
-      // Step 2: Long-poll until done/error or timeout.
+      return { success: true, requestId };
+    },
+
+    async checkRequest(requestId, options) {
+      if (!requestId) {
+        return { success: false, error: "requestId is required" };
+      }
+
+      const pollUrl = new URL(`${base}/check-request/${requestId}`);
+      const waitMs = options?.waitMs ?? 0;
+      if (waitMs > 0) {
+        pollUrl.searchParams.set("waitMs", String(waitMs));
+      }
+
+      let pollResponse: Response;
+      try {
+        pollResponse = await fetch(pollUrl, {
+          headers: { "X-API-Key": deps.apiKey },
+        });
+      } catch (err) {
+        return { success: false, error: `poll network error: ${String(err)}` };
+      }
+
+      if (pollResponse.status === 404) {
+        return { success: false, error: `request ${requestId} not found` };
+      }
+
+      if (!pollResponse.ok) {
+        let body = "";
+        try {
+          body = await pollResponse.text();
+        } catch {
+          // ignore
+        }
+        return {
+          success: false,
+          error: `poll HTTP ${pollResponse.status}: ${body.slice(0, 500)}`,
+        };
+      }
+
+      let pollJson: Record<string, unknown>;
+      try {
+        pollJson = (await pollResponse.json()) as Record<string, unknown>;
+      } catch (err) {
+        return { success: false, error: `invalid poll JSON: ${String(err)}` };
+      }
+
+      const status = pollJson.status as string;
+
+      if (status === "done") {
+        const result = (pollJson.result ?? pollJson) as Record<string, unknown>;
+        const validated = validateResult(result);
+        if (!validated.success) {
+          return validated;
+        }
+        return { success: true, status: "done", result: validated };
+      }
+
+      if (status === "error") {
+        const errObj = pollJson.error as Record<string, unknown> | undefined;
+        const errMsg = errObj
+          ? (str(errObj.message) ?? str(errObj.code) ?? "unknown error")
+          : "parse-and-quote failed";
+        return { success: false, error: errMsg };
+      }
+
+      if (status === "queued" || status === "processing") {
+        return { success: true, status };
+      }
+
+      return { success: false, error: `unknown request status: ${status || "(empty)"}` };
+    },
+
+    async quote({ mediaPath, phoneNumber }) {
+      const submitted = await this.submitReceipt({ mediaPath, phoneNumber });
+      if (!submitted.success) {
+        return submitted;
+      }
+
+      // Long-poll until done/error or timeout.
       // On cache hit (status==="done"), request immediate status to fetch the cached result.
       // If an older server ignores waitMs and returns queued/processing immediately, back off
       // with pollInterval to avoid tight client-side polling.
       const deadline = Date.now() + timeout;
-      let immediateFirstPoll = submitJson.status === "done";
+      let immediateFirstPoll = false;
 
       while (Date.now() < deadline) {
         const remainingMs = deadline - Date.now();
         const waitMs = immediateFirstPoll ? 0 : Math.max(0, Math.min(longPollWaitMs, remainingMs));
         immediateFirstPoll = false;
-        const pollUrl = new URL(`${base}/check-request/${requestId}`);
-        if (waitMs > 0) {
-          pollUrl.searchParams.set("waitMs", String(waitMs));
-        }
 
         const pollStartedAt = Date.now();
-        let pollResponse: Response;
-        try {
-          pollResponse = await fetch(pollUrl, {
-            headers: { "X-API-Key": deps.apiKey },
-          });
-        } catch (err) {
-          return { success: false, error: `poll network error: ${String(err)}` };
+        const checked = await this.checkRequest(submitted.requestId, { waitMs });
+        if (!checked.success) {
+          return checked;
         }
-
-        if (pollResponse.status === 404) {
-          return { success: false, error: `request ${requestId} not found` };
-        }
-
-        if (!pollResponse.ok) {
-          let body = "";
-          try {
-            body = await pollResponse.text();
-          } catch {
-            // ignore
-          }
-          return {
-            success: false,
-            error: `poll HTTP ${pollResponse.status}: ${body.slice(0, 500)}`,
-          };
-        }
-
-        let pollJson: Record<string, unknown>;
-        try {
-          pollJson = (await pollResponse.json()) as Record<string, unknown>;
-        } catch (err) {
-          return { success: false, error: `invalid poll JSON: ${String(err)}` };
-        }
-
-        const status = pollJson.status as string;
-
-        if (status === "done") {
-          const result = (pollJson.result ?? pollJson) as Record<string, unknown>;
-          return validateResult(result);
-        }
-
-        if (status === "error") {
-          const errObj = pollJson.error as Record<string, unknown> | undefined;
-          const errMsg = errObj
-            ? (str(errObj.message) ?? str(errObj.code) ?? "unknown error")
-            : "parse-and-quote failed";
-          return { success: false, error: errMsg };
+        if (checked.status === "done") {
+          return checked.result;
         }
 
         // queued or processing — continue polling. If the response came back quickly,
@@ -384,7 +472,7 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
 
       return {
         success: false,
-        error: `timeout: requestId=${requestId} did not complete in ${timeout}ms`,
+        error: `timeout: requestId=${submitted.requestId} did not complete in ${timeout}ms`,
       };
     },
 

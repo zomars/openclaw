@@ -3,6 +3,8 @@
  */
 
 import Database from "better-sqlite3";
+import type { LeadEventRecord, LeadEventRejectedWrite } from "../crm-memory/lead-events.js";
+import { eventMatchesLeadKey } from "../crm-memory/lead-events.js";
 import type { Database as DatabaseInterface } from "../database.js";
 import { normalizePhone } from "../utils/phone.js";
 import type {
@@ -17,6 +19,12 @@ import type {
   ExtractionStatus,
   WhatsAppLabel,
   StoredMessage,
+  PendingQuoteJob,
+  CrmSyncOutboxRow,
+  CrmSyncCheckpoint,
+  LeadMemoryEventRow,
+  LeadMemoryRejectedWriteRow,
+  QuoteWebhookEventRow,
 } from "./schema.js";
 import {
   CREATE_TABLES_SQL,
@@ -35,6 +43,12 @@ import {
   MIGRATE_V10_TO_V11_DDL,
   MIGRATE_V11_TO_V12_DDL,
   MIGRATE_V12_TO_V13_DDL,
+  MIGRATE_V13_TO_V14_DDL,
+  MIGRATE_V14_TO_V15_DDL,
+  MIGRATE_V15_TO_V16_DDL,
+  MIGRATE_V16_TO_V17_DDL,
+  MIGRATE_V17_TO_V18_DDL,
+  MIGRATE_V18_TO_V19_DDL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -45,7 +59,7 @@ export interface SqliteDatabaseConfig {
 export class SqliteDatabase implements DatabaseInterface {
   private db: Database.Database;
 
-  constructor(private config: SqliteDatabaseConfig) {
+  constructor(config: SqliteDatabaseConfig) {
     this.db = new Database(config.dbPath);
     this.db.pragma("journal_mode = DELETE");
     this.db.pragma("foreign_keys = ON");
@@ -208,6 +222,52 @@ export class SqliteDatabase implements DatabaseInterface {
           }
         }
       }
+      if (versionRow.version < 14) {
+        // v13→v14: durable async CFE quote delivery jobs.
+        this.db.exec(MIGRATE_V13_TO_V14_DDL);
+      }
+      if (versionRow.version < 15) {
+        // v14→v15: recurrent OpenClaw ↔ Lovable CRM sync outbox and cursors.
+        this.db.exec(MIGRATE_V14_TO_V15_DDL);
+      }
+      if (versionRow.version < 16) {
+        // v15→v16: durable CRM memory event log, artifacts, and rejection audit.
+        this.db.exec(MIGRATE_V15_TO_V16_DDL);
+      }
+      if (versionRow.version < 17) {
+        // v16→v17: internal shadow quote URL metadata on async quote jobs.
+        for (const stmt of MIGRATE_V16_TO_V17_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
+      }
+      if (versionRow.version < 18) {
+        // v17→v18: durable signed quote webhook ingest and idempotency.
+        this.db.exec(MIGRATE_V17_TO_V18_DDL);
+      }
+      if (versionRow.version < 19) {
+        // v18→v19: remember the originating agent session for webhook resumptions.
+        for (const stmt of MIGRATE_V18_TO_V19_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
+      }
       this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
     }
   }
@@ -234,7 +294,9 @@ export class SqliteDatabase implements DatabaseInterface {
     `)
       .run(phoneNumber, now, now, now, now);
 
-    return this.getLeadById(result.lastInsertRowid as number) as Promise<Lead>;
+    const lead = (await this.getLeadById(result.lastInsertRowid as number)) as Lead;
+    await this.enqueueLeadSnapshotSync(lead.id);
+    return lead;
   }
 
   async getLeadById(id: number): Promise<Lead | null> {
@@ -274,18 +336,21 @@ export class SqliteDatabase implements DatabaseInterface {
     } else if (status === "rate_limited") {
       this.db.prepare("UPDATE leads SET rate_limited_at = ? WHERE id = ?").run(now, id);
     }
+    await this.enqueueLeadSnapshotSync(id);
   }
 
   async updateLeadTimestamp(id: number, timestamp: number): Promise<void> {
     this.db
       .prepare("UPDATE leads SET last_message_at = ?, updated_at = ? WHERE id = ?")
       .run(timestamp, Date.now(), id);
+    await this.enqueueLeadSnapshotSync(id);
   }
 
   async updateAssignedAgent(id: number, agentPhone: string | null): Promise<void> {
     this.db
       .prepare("UPDATE leads SET assigned_agent = ?, updated_at = ? WHERE id = ?")
       .run(agentPhone, Date.now(), id);
+    await this.enqueueLeadSnapshotSync(id);
   }
 
   async updateLastBotReply(id: number, timestamp: number): Promise<void> {
@@ -329,6 +394,7 @@ export class SqliteDatabase implements DatabaseInterface {
       values.push(leadId);
 
       this.db.prepare(`UPDATE leads SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      await this.enqueueLeadSnapshotSync(leadId);
     }
   }
 
@@ -338,12 +404,8 @@ export class SqliteDatabase implements DatabaseInterface {
       return false;
     }
 
-    return !!(
-      lead.name &&
-      lead.location &&
-      lead.ownership &&
-      lead.bimonthly_bill &&
-      lead.property_type
+    return Boolean(
+      lead.name && lead.location && lead.ownership && lead.bimonthly_bill && lead.property_type,
     );
   }
 
@@ -378,6 +440,7 @@ export class SqliteDatabase implements DatabaseInterface {
       values.push(leadId);
 
       this.db.prepare(`UPDATE leads SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      await this.enqueueLeadSnapshotSync(leadId);
     }
   }
 
@@ -394,6 +457,94 @@ export class SqliteDatabase implements DatabaseInterface {
       VALUES (?, ?, ?, ?, ?)
     `)
       .run(leadId, event, triggeredBy, metadataJson, Date.now());
+    await this.enqueueLeadSnapshotSync(leadId);
+  }
+
+  append(leadKey: string, event: LeadEventRecord): void {
+    if (!eventMatchesLeadKey(leadKey, event)) {
+      this.db
+        .prepare(
+          `INSERT INTO lead_memory_rejected_writes (
+            attempted_event_id, attempted_lead_key, attempted_lead_phone,
+            scoped_lead_key, reason, source_json, summary, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          event.id,
+          event.leadKey,
+          event.leadPhone,
+          leadKey,
+          "cross_lead_event_write",
+          JSON.stringify(event.source),
+          event.summary,
+          Date.now(),
+        );
+
+      throw new Error(
+        `Cross-lead event write rejected: scoped lead ${leadKey} cannot receive event for ${event.leadKey}`,
+      );
+    }
+
+    this.db
+      .prepare(
+        `INSERT INTO lead_events (
+          id, lead_key, lead_phone, type, actor, timestamp,
+          source_json, summary, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        event.id,
+        event.leadKey,
+        event.leadPhone,
+        event.type,
+        event.actor,
+        event.timestamp,
+        JSON.stringify(event.source),
+        event.summary,
+        event.payload === undefined ? null : JSON.stringify(event.payload),
+        Date.now(),
+      );
+  }
+
+  read(leadKey: string): LeadEventRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM lead_events
+         WHERE lead_key = ?
+         ORDER BY timestamp ASC, id ASC`,
+      )
+      .all(leadKey) as LeadMemoryEventRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      leadKey: row.lead_key,
+      leadPhone: row.lead_phone,
+      type: row.type,
+      actor: row.actor as LeadEventRecord["actor"],
+      timestamp: row.timestamp,
+      source: JSON.parse(row.source_json) as LeadEventRecord["source"],
+      summary: row.summary,
+      payload: row.payload_json === null ? undefined : JSON.parse(row.payload_json),
+    }));
+  }
+
+  readRejectedWrites(): LeadEventRejectedWrite[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM lead_memory_rejected_writes
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all() as LeadMemoryRejectedWriteRow[];
+
+    return rows.map((row) => ({
+      attemptedEventId: row.attempted_event_id,
+      attemptedLeadKey: row.attempted_lead_key,
+      attemptedLeadPhone: row.attempted_lead_phone,
+      scopedLeadKey: row.scoped_lead_key,
+      reason: "cross_lead_event_write",
+      source: JSON.parse(row.source_json) as LeadEventRecord["source"],
+      summary: row.summary,
+    }));
   }
 
   async updateRateLimitCount(leadId: number, count: number): Promise<void> {
@@ -427,6 +578,7 @@ export class SqliteDatabase implements DatabaseInterface {
       WHERE id = ?
     `)
       .run(now, reason, now, leadId);
+    await this.enqueueLeadSnapshotSync(leadId);
   }
 
   async unblockLead(leadId: number): Promise<void> {
@@ -438,6 +590,7 @@ export class SqliteDatabase implements DatabaseInterface {
       WHERE id = ?
     `)
       .run(now, leadId);
+    await this.enqueueLeadSnapshotSync(leadId);
   }
 
   async resetLead(leadId: number): Promise<void> {
@@ -458,6 +611,7 @@ export class SqliteDatabase implements DatabaseInterface {
       WHERE id = ?
     `)
       .run(now, leadId);
+    await this.enqueueLeadSnapshotSync(leadId);
   }
 
   async getSilentLeads(thresholdHours: number, maxFollowups: number): Promise<Lead[]> {
@@ -535,6 +689,7 @@ export class SqliteDatabase implements DatabaseInterface {
     this.db
       .prepare("UPDATE leads SET follow_up_sent_at = ?, updated_at = ? WHERE id = ?")
       .run(timestamp, Date.now(), id);
+    await this.enqueueLeadSnapshotSync(id);
   }
 
   async getStats(): Promise<LeadStats> {
@@ -724,6 +879,12 @@ export class SqliteDatabase implements DatabaseInterface {
         "UPDATE receipt_extractions SET status = ?, completed_at = ?, error = ? WHERE id = ?",
       )
       .run(status, now, error, extractionId);
+    const row = this.db
+      .prepare("SELECT lead_id FROM receipt_extractions WHERE id = ?")
+      .get(extractionId) as { lead_id: number } | undefined;
+    if (row) {
+      await this.enqueueLeadSnapshotSync(row.lead_id);
+    }
   }
 
   async getExtractionAttempts(leadId: number): Promise<ReceiptExtraction[]> {
@@ -749,6 +910,7 @@ export class SqliteDatabase implements DatabaseInterface {
     this.db
       .prepare("UPDATE leads SET custom_fields = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(merged), Date.now(), leadId);
+    await this.enqueueLeadSnapshotSync(leadId);
   }
 
   async upsertLead(
@@ -839,6 +1001,7 @@ export class SqliteDatabase implements DatabaseInterface {
         values.push(now);
         values.push(existing.id);
         this.db.prepare(`UPDATE leads SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+        await this.enqueueLeadSnapshotSync(existing.id);
       }
 
       return (await this.getLeadById(existing.id))!;
@@ -871,7 +1034,9 @@ export class SqliteDatabase implements DatabaseInterface {
         now,
       );
 
-    return (await this.getLeadById(result.lastInsertRowid as number))!;
+    const lead = (await this.getLeadById(result.lastInsertRowid as number))!;
+    await this.enqueueLeadSnapshotSync(lead.id);
+    return lead;
   }
 
   async listLeads(filters?: { status?: string; score?: string }): Promise<Lead[]> {
@@ -903,6 +1068,7 @@ export class SqliteDatabase implements DatabaseInterface {
         "UPDATE leads SET receipt_data = ?, tariff = ?, annual_kwh = ?, updated_at = ? WHERE id = ?",
       )
       .run(data.receipt_data, data.tariff ?? null, data.annual_kwh ?? null, now, leadId);
+    await this.enqueueLeadSnapshotSync(leadId);
   }
 
   async getRecentExtractionFailures(windowMs: number): Promise<number> {
@@ -913,6 +1079,358 @@ export class SqliteDatabase implements DatabaseInterface {
       )
       .get(cutoff) as { count: number } | undefined;
     return result?.count || 0;
+  }
+
+  // --- Async CFE quote delivery jobs ---
+
+  async createPendingQuoteJob(input: {
+    requestId: string;
+    customerPhone: string;
+    mediaPath: string;
+    agentSessionKey?: string | null;
+    agentSessionId?: string | null;
+    invokingAgentId?: string | null;
+    nextPollAt?: number;
+  }): Promise<number> {
+    const now = Date.now();
+    const row = this.db
+      .prepare(
+        `INSERT INTO pending_quote_jobs (
+          request_id, customer_phone, media_path, agent_session_key,
+          agent_session_id, invoking_agent_id, status, attempts,
+          next_poll_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+        ON CONFLICT(request_id) DO UPDATE SET
+          customer_phone = excluded.customer_phone,
+          media_path = excluded.media_path,
+          agent_session_key = excluded.agent_session_key,
+          agent_session_id = excluded.agent_session_id,
+          invoking_agent_id = excluded.invoking_agent_id,
+          status = 'pending',
+          attempts = 0,
+          next_poll_at = excluded.next_poll_at,
+          webhook_resumed_at = NULL,
+          last_error = NULL,
+          quote_id = NULL,
+          quote_number = NULL,
+          quote_access_token_id = NULL,
+          quote_access_url = NULL,
+          quote_access_expires_at = NULL,
+          updated_at = excluded.updated_at,
+          completed_at = NULL
+        RETURNING id`,
+      )
+      .get(
+        input.requestId,
+        input.customerPhone,
+        input.mediaPath,
+        input.agentSessionKey ?? null,
+        input.agentSessionId ?? null,
+        input.invokingAgentId ?? null,
+        input.nextPollAt ?? now,
+        now,
+        now,
+      ) as { id: number } | undefined;
+    if (!row) {
+      throw new Error("failed to create pending quote job");
+    }
+    return row.id;
+  }
+
+  async getDuePendingQuoteJobs(now: number, limit: number): Promise<PendingQuoteJob[]> {
+    return this.db
+      .prepare(
+        `SELECT * FROM pending_quote_jobs
+         WHERE status = 'pending' AND next_poll_at <= ?
+           AND webhook_resumed_at IS NULL
+         ORDER BY next_poll_at ASC, id ASC
+         LIMIT ?`,
+      )
+      .all(now, limit) as PendingQuoteJob[];
+  }
+
+  async getPendingQuoteJobByRequestId(requestId: string): Promise<PendingQuoteJob | null> {
+    const row = this.db
+      .prepare("SELECT * FROM pending_quote_jobs WHERE request_id = ?")
+      .get(requestId) as PendingQuoteJob | undefined;
+    return row ?? null;
+  }
+
+  async markPendingQuoteJobWebhookResumed(id: number, resumedAt = Date.now()): Promise<boolean> {
+    const result = this.db
+      .prepare(
+        `UPDATE pending_quote_jobs
+         SET webhook_resumed_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'pending' AND webhook_resumed_at IS NULL`,
+      )
+      .run(resumedAt, resumedAt, id);
+    return result.changes > 0;
+  }
+
+  async reschedulePendingQuoteJob(
+    id: number,
+    input: { attempts: number; nextPollAt: number; lastError?: string | null },
+  ): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE pending_quote_jobs
+         SET attempts = ?, next_poll_at = ?, last_error = ?, updated_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(input.attempts, input.nextPollAt, input.lastError ?? null, Date.now(), id);
+  }
+
+  async markPendingQuoteJobDelivered(
+    id: number,
+    input: {
+      attempts: number;
+      quoteId: string;
+      quoteNumber: string;
+      quoteAccess?: {
+        tokenId: string;
+        url: string;
+        expiresAt: number;
+      } | null;
+    },
+  ): Promise<void> {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `UPDATE pending_quote_jobs
+         SET status = 'delivered', attempts = ?, quote_id = ?, quote_number = ?,
+             quote_access_token_id = ?, quote_access_url = ?, quote_access_expires_at = ?,
+             last_error = NULL, updated_at = ?, completed_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        input.attempts,
+        input.quoteId,
+        input.quoteNumber,
+        input.quoteAccess?.tokenId ?? null,
+        input.quoteAccess?.url ?? null,
+        input.quoteAccess?.expiresAt ?? null,
+        now,
+        now,
+        id,
+      );
+    const job = this.db
+      .prepare("SELECT customer_phone FROM pending_quote_jobs WHERE id = ?")
+      .get(id) as { customer_phone: string } | undefined;
+    if (job) {
+      const lead = await this.getLeadByPhone(job.customer_phone);
+      if (lead) {
+        await this.enqueueLeadSnapshotSync(lead.id);
+      }
+    }
+  }
+
+  async markPendingQuoteJobFailed(
+    id: number,
+    input: {
+      attempts: number;
+      error: string;
+      quoteId?: string | null;
+      quoteNumber?: string | null;
+    },
+  ): Promise<void> {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `UPDATE pending_quote_jobs
+         SET status = 'failed', attempts = ?, last_error = ?, quote_id = ?,
+             quote_number = ?, updated_at = ?, completed_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        input.attempts,
+        input.error,
+        input.quoteId ?? null,
+        input.quoteNumber ?? null,
+        now,
+        now,
+        id,
+      );
+    const job = this.db
+      .prepare("SELECT customer_phone FROM pending_quote_jobs WHERE id = ?")
+      .get(id) as { customer_phone: string } | undefined;
+    if (job) {
+      const lead = await this.getLeadByPhone(job.customer_phone);
+      if (lead) {
+        await this.enqueueLeadSnapshotSync(lead.id);
+      }
+    }
+  }
+
+  async recordQuoteWebhookEvent(input: {
+    source: string;
+    eventId: string;
+    eventType: string;
+    requestId?: string | null;
+    subject?: string | null;
+    payload: unknown;
+    receivedAt?: number;
+  }): Promise<{ row: QuoteWebhookEventRow; duplicate: boolean }> {
+    const now = input.receivedAt ?? Date.now();
+    const row = this.db
+      .prepare(
+        `INSERT INTO quote_webhook_events (
+          source, event_id, event_type, request_id, subject, payload_json,
+          status, duplicate_count, first_received_at, last_received_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', 0, ?, ?)
+        ON CONFLICT(source, event_id) DO UPDATE SET
+          duplicate_count = quote_webhook_events.duplicate_count + 1,
+          last_received_at = excluded.last_received_at
+        RETURNING *`,
+      )
+      .get(
+        input.source,
+        input.eventId,
+        input.eventType,
+        input.requestId ?? null,
+        input.subject ?? null,
+        JSON.stringify(input.payload ?? null),
+        now,
+        now,
+      ) as QuoteWebhookEventRow | undefined;
+    if (!row) {
+      throw new Error("failed to record quote webhook event");
+    }
+    return { row, duplicate: row.duplicate_count > 0 };
+  }
+
+  // --- CRM sync outbox ---
+
+  async enqueueCrmSyncEvent(input: {
+    eventType: string;
+    aggregateType: string;
+    aggregateId: string | number;
+    idempotencyKey: string;
+    payload: unknown;
+    nextAttemptAt?: number;
+  }): Promise<number> {
+    const now = Date.now();
+    const nextAttemptAt = input.nextAttemptAt ?? now;
+    const row = this.db
+      .prepare(
+        `INSERT INTO crm_sync_outbox (
+          event_type, aggregate_type, aggregate_id, idempotency_key, payload_json,
+          status, attempts, next_attempt_at, last_error, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, ?, ?)
+        ON CONFLICT(idempotency_key) DO UPDATE SET
+          event_type = excluded.event_type,
+          aggregate_type = excluded.aggregate_type,
+          aggregate_id = excluded.aggregate_id,
+          payload_json = excluded.payload_json,
+          status = 'pending',
+          attempts = 0,
+          next_attempt_at = excluded.next_attempt_at,
+          last_error = NULL,
+          updated_at = excluded.updated_at
+        RETURNING id`,
+      )
+      .get(
+        input.eventType,
+        input.aggregateType,
+        String(input.aggregateId),
+        input.idempotencyKey,
+        JSON.stringify(input.payload),
+        nextAttemptAt,
+        now,
+        now,
+      ) as { id: number } | undefined;
+
+    if (!row) {
+      throw new Error("failed to enqueue CRM sync event");
+    }
+    return row.id;
+  }
+
+  async enqueueLeadSnapshotSync(leadId: number): Promise<void> {
+    const lead = await this.getLeadById(leadId);
+    if (!lead) {
+      return;
+    }
+    await this.enqueueCrmSyncEvent({
+      eventType: "lead_snapshot_changed",
+      aggregateType: "lead",
+      aggregateId: lead.id,
+      idempotencyKey: `lead_snapshot:lead:${lead.id}`,
+      payload: {
+        leadId: lead.id,
+        phoneNumber: lead.phone_number,
+        updatedAt: lead.updated_at,
+      },
+    });
+  }
+
+  async getDueCrmSyncOutbox(now: number, limit: number): Promise<CrmSyncOutboxRow[]> {
+    return this.db
+      .prepare(
+        `SELECT * FROM crm_sync_outbox
+         WHERE status = 'pending' AND next_attempt_at <= ?
+         ORDER BY next_attempt_at ASC, id ASC
+         LIMIT ?`,
+      )
+      .all(now, limit) as CrmSyncOutboxRow[];
+  }
+
+  async markCrmSyncOutboxSynced(id: number): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE crm_sync_outbox
+         SET status = 'synced', last_error = NULL, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(Date.now(), id);
+  }
+
+  async rescheduleCrmSyncOutbox(
+    id: number,
+    input: { attempts: number; nextAttemptAt: number; lastError?: string | null },
+  ): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE crm_sync_outbox
+         SET status = 'pending', attempts = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(input.attempts, input.nextAttemptAt, input.lastError ?? null, Date.now(), id);
+  }
+
+  async markCrmSyncOutboxFailed(
+    id: number,
+    input: { attempts: number; error: string },
+  ): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE crm_sync_outbox
+         SET status = 'failed', attempts = ?, last_error = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(input.attempts, input.error, Date.now(), id);
+  }
+
+  async getCrmSyncCheckpoint(name: string): Promise<CrmSyncCheckpoint | null> {
+    const row = this.db.prepare("SELECT * FROM crm_sync_checkpoints WHERE name = ?").get(name) as
+      | CrmSyncCheckpoint
+      | undefined;
+    return row ?? null;
+  }
+
+  async setCrmSyncCheckpoint(
+    name: string,
+    cursor: string | null,
+    syncedAt = Date.now(),
+  ): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO crm_sync_checkpoints (name, cursor, synced_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET
+           cursor = excluded.cursor,
+           synced_at = excluded.synced_at`,
+      )
+      .run(name, cursor, syncedAt);
   }
 
   // --- WhatsApp label store ---
@@ -941,9 +1459,9 @@ export class SqliteDatabase implements DatabaseInterface {
 
   // --- MessageStore ---
 
-  private _insertMessageStmt?: ReturnType<Database.Database["prepare"]>;
+  private insertMessageStatement?: ReturnType<Database.Database["prepare"]>;
   private get insertMessageStmt() {
-    return (this._insertMessageStmt ??= this.db.prepare(
+    return (this.insertMessageStatement ??= this.db.prepare(
       `INSERT OR IGNORE INTO messages (id, chat_jid, sender_jid, sender_name, from_me, timestamp, content, message_type, media_type, media_filename, media_size, media_path, reaction_emoji, reaction_target_id, revoked_target_id, edited_from_id, peer_e164, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ));
@@ -989,9 +1507,16 @@ export class SqliteDatabase implements DatabaseInterface {
       .all(peerE164, limit) as StoredMessage[];
   }
 
-  private _updateMediaStmt?: ReturnType<Database.Database["prepare"]>;
+  getLatestMessageByPeerE164Sync(peerE164: string): StoredMessage | null {
+    const row = this.db
+      .prepare("SELECT * FROM messages WHERE peer_e164 = ? ORDER BY timestamp DESC LIMIT 1")
+      .get(peerE164) as StoredMessage | undefined;
+    return row ?? null;
+  }
+
+  private updateMediaStatement?: ReturnType<Database.Database["prepare"]>;
   private get updateMediaStmt() {
-    return (this._updateMediaStmt ??= this.db.prepare(
+    return (this.updateMediaStatement ??= this.db.prepare(
       `UPDATE messages
          SET media_path = COALESCE(?, media_path),
              media_type = COALESCE(?, media_type),

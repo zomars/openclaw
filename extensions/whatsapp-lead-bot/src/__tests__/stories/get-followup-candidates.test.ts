@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { appendResolvedLeadEvent } from "../../crm-memory/lead-events.js";
 import { getFollowupCandidatesTool } from "../../tools/get-followup-candidates.js";
+import { createTestConfig } from "../helpers/test-config.js";
 import { createTestDb } from "../helpers/tmp-db.js";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -249,6 +251,67 @@ describe("get_followup_candidates", () => {
     );
     expect(cold.count).toBe(1);
     expect(cold.leads[0].phone_number).toBe(cold1);
+  });
+
+  it("skips CRM memory handoff-locked candidates when cron gate is enabled", async () => {
+    const { db } = createTestDb();
+    const phone = await makeLead(db, "+5216670002501", {
+      score: "HOT",
+      status: "new",
+      lastMessageDaysAgo: 5,
+    });
+    const lead = (await db.getLeadByPhone(phone))!;
+    const leadPhone = phone.replace(/^\+/, "");
+    appendResolvedLeadEvent({
+      scope: {
+        leadKey: `whatsapp:${leadPhone}`,
+        leadPhone,
+      },
+      log: db,
+      now: () => 1782573000000,
+      event: {
+        type: "handoff.started",
+        actor: "admin",
+        source: {
+          channel: "tool",
+          toolName: "handoff_lead",
+        },
+        summary: "Ale took over the lead.",
+        payload: {
+          assignedAgent: "Ale",
+        },
+      },
+    });
+    const config = createTestConfig({
+      crmMemory: {
+        enabled: true,
+        mirrorEnabled: false,
+        eventWritesEnabled: true,
+        contextReadsEnabled: false,
+        cronGateEnabled: true,
+        adminStatusEnabled: false,
+      },
+    });
+
+    const result = await getFollowupCandidatesTool.execute({}, { db, config });
+
+    expect(result.success).toBe(true);
+    expect(result.leads).toEqual([]);
+    expect(
+      db.read(`whatsapp:${leadPhone}`).find((event) => event.type === "followup.skipped"),
+    ).toMatchObject({
+      type: "followup.skipped",
+      actor: "cron",
+      source: {
+        channel: "tool",
+        toolName: "get_followup_candidates",
+      },
+      payload: {
+        leadId: lead.id,
+        reason: "human_handoff_active",
+        assignedAgent: "Ale",
+      },
+    });
   });
 
   it("excludes leads with invalid phone numbers (non-E.164)", async () => {

@@ -36,6 +36,7 @@ export interface PluginHookMessageContext {
   channelId: string;
   accountId?: string;
   conversationId?: string;
+  agentId?: string;
 }
 
 export interface PluginHookBeforeToolCallEvent {

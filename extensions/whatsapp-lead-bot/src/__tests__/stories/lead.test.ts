@@ -50,7 +50,10 @@ function makeLead(overrides: Partial<Lead> = {}): Lead {
     annual_kwh: null,
     rate_limit_count: 0,
     rate_limit_window_start: 0,
-    custom_fields: null,
+    follow_up_attempts: 0,
+    survey_sent_at: null,
+    instagram_reminder_sent_at: null,
+    custom_fields: "{}",
     ...overrides,
   };
 }
@@ -171,6 +174,63 @@ describe("Lead / Customer Stories", () => {
     expect(lead!.status).toBe("new");
   });
 
+  it("writes a durable CRM memory event for inbound WhatsApp messages when enabled", async () => {
+    const { db, wrappedHandler } = createMessageHandlerFixture({
+      whatsappAccounts: ["acct-1"],
+      crmMemory: {
+        enabled: true,
+        mirrorEnabled: false,
+        eventWritesEnabled: true,
+        contextReadsEnabled: false,
+        cronGateEnabled: false,
+        adminStatusEnabled: false,
+      },
+    });
+
+    const result = await wrappedHandler(
+      {
+        from: "+5216671999999",
+        content: "Hola, quiero cotizar paneles",
+        timestamp: 1782321000000,
+        metadata: {
+          originatingChannel: "whatsapp",
+          messageId: "msg-runtime-crm-1",
+        },
+      },
+      {
+        channelId: "whatsapp",
+        accountId: "acct-1",
+        conversationId: "+5216671999999@c.us",
+        agentId: "solayre-leads",
+      },
+    );
+
+    expect(result.suppress).not.toBe(true);
+    expect(db.read("whatsapp:526671999999")).toEqual([
+      {
+        id: "evt-1782321000000-whatsapp-526671999999-1",
+        leadKey: "whatsapp:526671999999",
+        leadPhone: "526671999999",
+        type: "message.received",
+        actor: "prospect",
+        timestamp: 1782321000000,
+        source: {
+          channel: "whatsapp",
+          messageId: "msg-runtime-crm-1",
+          accountId: "acct-1",
+          agentId: "solayre-leads",
+          conversationId: "+5216671999999@c.us",
+        },
+        summary: "Inbound WhatsApp message received.",
+        payload: {
+          leadId: 1,
+          content: "Hola, quiero cotizar paneles",
+          hasMedia: false,
+        },
+      },
+    ]);
+  });
+
   it("consumes owner self-chat admin commands before sibling agent dispatch", async () => {
     const { runtime, wrappedHandler } = createMessageHandlerFixture({
       whatsappAccounts: ["acct-1"],
@@ -217,6 +277,55 @@ describe("Lead / Customer Stories", () => {
     expect(result).toEqual({ suppress: true });
     expect(runtime.sentMessages).toHaveLength(1);
     expect(runtime.sentMessages[0]?.to).toBe("+5216678403290");
+  });
+
+  it("consumes configured operator admin commands before sibling agent dispatch", async () => {
+    const { runtime, wrappedHandler } = createMessageHandlerFixture({
+      whatsappAccounts: ["acct-1"],
+      agentId: "solayre-leads",
+      agentNumbers: ["+5216672350818"],
+    });
+
+    const result = await wrappedHandler(
+      {
+        from: "+5216672350818",
+        content: "/recent 1",
+        timestamp: Date.now(),
+        metadata: {
+          to: "+5216621413782",
+          sentByAccountOwner: false,
+        },
+      },
+      { channelId: "whatsapp", accountId: "acct-1", agentId: "solayre-coworker" },
+    );
+
+    expect(result).toEqual({ suppress: true });
+    expect(runtime.sentMessages).toHaveLength(1);
+    expect(runtime.sentMessages[0]?.to).toBe("+5216672350818");
+  });
+
+  it("suppresses unknown slash commands before sibling agent dispatch", async () => {
+    const { runtime, wrappedHandler } = createMessageHandlerFixture({
+      whatsappAccounts: ["acct-1"],
+      agentId: "solayre-leads",
+      agentNumbers: ["+5216672350818"],
+    });
+
+    const result = await wrappedHandler(
+      {
+        from: "+5216672350818",
+        content: "/not-a-command",
+        timestamp: Date.now(),
+        metadata: {
+          to: "+5216621413782",
+          sentByAccountOwner: false,
+        },
+      },
+      { channelId: "whatsapp", accountId: "acct-1", agentId: "solayre-coworker" },
+    );
+
+    expect(result).toEqual({ suppress: true });
+    expect(runtime.sentMessages).toHaveLength(0);
   });
 
   it("does not run the lead pipeline for non-admin sibling agent messages", async () => {

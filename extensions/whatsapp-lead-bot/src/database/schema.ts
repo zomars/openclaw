@@ -145,6 +145,227 @@ export interface StoredMessage {
   created_at: number;
 }
 
+export type PendingQuoteJobStatus = "pending" | "delivered" | "failed";
+
+export interface PendingQuoteJob {
+  id: number;
+  request_id: string;
+  customer_phone: string;
+  media_path: string;
+  agent_session_key?: string | null;
+  agent_session_id?: string | null;
+  invoking_agent_id?: string | null;
+  status: PendingQuoteJobStatus;
+  attempts: number;
+  next_poll_at: number;
+  webhook_resumed_at?: number | null;
+  last_error: string | null;
+  quote_id: string | null;
+  quote_number: string | null;
+  quote_access_token_id: string | null;
+  quote_access_url: string | null;
+  quote_access_expires_at: number | null;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
+}
+
+export type CrmSyncOutboxStatus = "pending" | "processing" | "synced" | "failed";
+
+export interface CrmSyncOutboxRow {
+  id: number;
+  event_type: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  idempotency_key: string;
+  payload_json: string;
+  status: CrmSyncOutboxStatus;
+  attempts: number;
+  next_attempt_at: number;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CrmSyncCheckpoint {
+  name: string;
+  cursor: string | null;
+  synced_at: number;
+}
+
+export interface LeadMemoryEventRow {
+  id: string;
+  lead_key: string;
+  lead_phone: string;
+  type: string;
+  actor: string;
+  timestamp: number;
+  source_json: string;
+  summary: string;
+  payload_json: string | null;
+  created_at: number;
+}
+
+export interface LeadMemoryRejectedWriteRow {
+  id: number;
+  attempted_event_id: string;
+  attempted_lead_key: string;
+  attempted_lead_phone: string;
+  scoped_lead_key: string;
+  reason: string;
+  source_json: string;
+  summary: string;
+  created_at: number;
+}
+
+export interface QuoteWebhookEventRow {
+  id: number;
+  source: string;
+  event_id: string;
+  event_type: string;
+  request_id: string | null;
+  subject: string | null;
+  payload_json: string;
+  status: string;
+  duplicate_count: number;
+  first_received_at: number;
+  last_received_at: number;
+  processed_at: number | null;
+  last_error: string | null;
+}
+
+export const PENDING_QUOTE_JOBS_TABLE_DDL = `
+CREATE TABLE IF NOT EXISTS pending_quote_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT UNIQUE NOT NULL,
+  customer_phone TEXT NOT NULL,
+  media_path TEXT NOT NULL,
+  agent_session_key TEXT,
+  agent_session_id TEXT,
+  invoking_agent_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_poll_at INTEGER NOT NULL,
+  webhook_resumed_at INTEGER,
+  last_error TEXT,
+  quote_id TEXT,
+  quote_number TEXT,
+  quote_access_token_id TEXT,
+  quote_access_url TEXT,
+  quote_access_expires_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_quote_jobs_status_next
+  ON pending_quote_jobs(status, next_poll_at);
+CREATE INDEX IF NOT EXISTS idx_pending_quote_jobs_customer
+  ON pending_quote_jobs(customer_phone, created_at);
+`;
+
+export const CRM_SYNC_TABLES_DDL = `
+CREATE TABLE IF NOT EXISTS crm_sync_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_crm_sync_outbox_due
+  ON crm_sync_outbox(status, next_attempt_at, id);
+CREATE INDEX IF NOT EXISTS idx_crm_sync_outbox_aggregate
+  ON crm_sync_outbox(aggregate_type, aggregate_id);
+
+CREATE TABLE IF NOT EXISTS crm_sync_checkpoints (
+  name TEXT PRIMARY KEY,
+  cursor TEXT,
+  synced_at INTEGER NOT NULL
+);
+`;
+
+export const QUOTE_WEBHOOK_EVENTS_TABLE_DDL = `
+CREATE TABLE IF NOT EXISTS quote_webhook_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  request_id TEXT,
+  subject TEXT,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'accepted',
+  duplicate_count INTEGER NOT NULL DEFAULT 0,
+  first_received_at INTEGER NOT NULL,
+  last_received_at INTEGER NOT NULL,
+  processed_at INTEGER,
+  last_error TEXT,
+  UNIQUE(source, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_quote_webhook_events_status
+  ON quote_webhook_events(status, first_received_at, id);
+CREATE INDEX IF NOT EXISTS idx_quote_webhook_events_request
+  ON quote_webhook_events(request_id, first_received_at);
+`;
+
+export const CRM_MEMORY_TABLES_DDL = `
+CREATE TABLE IF NOT EXISTS lead_events (
+  id TEXT PRIMARY KEY,
+  lead_key TEXT NOT NULL,
+  lead_phone TEXT NOT NULL,
+  type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  source_json TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  payload_json TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lead_events_lead_time
+  ON lead_events(lead_key, timestamp, id);
+CREATE INDEX IF NOT EXISTS idx_lead_events_type_time
+  ON lead_events(type, timestamp);
+
+CREATE TABLE IF NOT EXISTS lead_artifacts (
+  id TEXT PRIMARY KEY,
+  lead_key TEXT NOT NULL,
+  lead_phone TEXT NOT NULL,
+  type TEXT NOT NULL,
+  pointer TEXT NOT NULL,
+  checksum TEXT,
+  source_json TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lead_artifacts_lead
+  ON lead_artifacts(lead_key, created_at);
+
+CREATE TABLE IF NOT EXISTS lead_memory_rejected_writes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempted_event_id TEXT NOT NULL,
+  attempted_lead_key TEXT NOT NULL,
+  attempted_lead_phone TEXT NOT NULL,
+  scoped_lead_key TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  source_json TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lead_memory_rejected_writes_scoped
+  ON lead_memory_rejected_writes(scoped_lead_key, created_at);
+`;
+
 export const MESSAGES_TABLE_DDL = `
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -204,7 +425,28 @@ export const MIGRATE_V12_TO_V13_DDL = `
 ALTER TABLE messages ADD COLUMN sender_name TEXT;
 `;
 
-export const SCHEMA_VERSION = 13;
+export const MIGRATE_V13_TO_V14_DDL = PENDING_QUOTE_JOBS_TABLE_DDL;
+
+export const MIGRATE_V14_TO_V15_DDL = CRM_SYNC_TABLES_DDL;
+
+export const MIGRATE_V15_TO_V16_DDL = CRM_MEMORY_TABLES_DDL;
+
+export const MIGRATE_V16_TO_V17_DDL = `
+ALTER TABLE pending_quote_jobs ADD COLUMN quote_access_token_id TEXT;
+ALTER TABLE pending_quote_jobs ADD COLUMN quote_access_url TEXT;
+ALTER TABLE pending_quote_jobs ADD COLUMN quote_access_expires_at INTEGER;
+`;
+
+export const MIGRATE_V17_TO_V18_DDL = QUOTE_WEBHOOK_EVENTS_TABLE_DDL;
+
+export const MIGRATE_V18_TO_V19_DDL = `
+ALTER TABLE pending_quote_jobs ADD COLUMN agent_session_key TEXT;
+ALTER TABLE pending_quote_jobs ADD COLUMN agent_session_id TEXT;
+ALTER TABLE pending_quote_jobs ADD COLUMN invoking_agent_id TEXT;
+ALTER TABLE pending_quote_jobs ADD COLUMN webhook_resumed_at INTEGER;
+`;
+
+export const SCHEMA_VERSION = 19;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking
@@ -315,6 +557,14 @@ CREATE TABLE IF NOT EXISTS whatsapp_labels (
 );
 
 ${MESSAGES_TABLE_DDL}
+
+${PENDING_QUOTE_JOBS_TABLE_DDL}
+
+${CRM_SYNC_TABLES_DDL}
+
+${CRM_MEMORY_TABLES_DDL}
+
+${QUOTE_WEBHOOK_EVENTS_TABLE_DDL}
 `;
 
 export const MIGRATE_V1_TO_V2_SQL = `
