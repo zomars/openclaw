@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { ServerResponse } from "node:http";
-import { createMockIncomingRequest } from "openclaw/plugin-sdk/test-env";
+import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { WhatsAppLeadBotConfig } from "../config/schema.js";
 import type { PendingQuoteJobStore, QuoteWebhookEventStore } from "../database.js";
@@ -28,6 +28,36 @@ function eventBody(eventId = "evt_123"): string {
     payload: {
       request_id: "req_123",
       quote_id: "quote_123",
+      quote_number: "SOL20260629-test",
+      pdf_url: "https://solayre.lovable.app/quotes/SOL20260629-test.pdf",
+      customer_name: "Juan Perez",
+      service_number: "538220809404",
+      summary: "11 paneles, 105.86% de cobertura, retorno estimado de 3.69 anos.",
+      quote: {
+        panel_count: 11,
+        cash_price: 115577.55,
+        financed_price: 212850,
+        annual_savings: 31314.3,
+        coverage_percent: 105.86,
+        payback_years: 3.69,
+        system_kw: 7.095,
+      },
+    },
+  });
+}
+
+function failedEventBody(eventId = "evt_failed_123"): string {
+  return JSON.stringify({
+    event_id: eventId,
+    type: "calculation.failed",
+    source: "solayre.parse-and-quote",
+    subject: "quote_request:req_123",
+    occurred_at: "2026-06-29T18:25:00Z",
+    payload: {
+      request_id: "req_123",
+      error: "No se pudo leer el recibo CFE.",
+      error_code: "receipt_unreadable",
+      retryable: false,
     },
   });
 }
@@ -50,6 +80,17 @@ function createRes() {
     res: resObj as unknown as ServerResponse & { body?: unknown },
     headers,
   };
+}
+
+function createIncomingRequest(chunks: string[]) {
+  const req = Readable.from(chunks) as ReturnType<typeof Readable.from> & {
+    headers: Record<string, string>;
+    method?: string;
+    socket: { remoteAddress?: string };
+  };
+  req.headers = {};
+  req.socket = {};
+  return req;
 }
 
 function baseConfig(): WhatsAppLeadBotConfig {
@@ -210,7 +251,7 @@ async function invoke(params: {
   store?: QuoteWebhookEventStore & PendingQuoteJobStore;
   sessionWorkflow?: Parameters<typeof createQuoteEventWebhookHandler>[0]["sessionWorkflow"];
 }) {
-  const req = createMockIncomingRequest([params.body]);
+  const req = createIncomingRequest([params.body]);
   req.method = "POST";
   req.headers = {
     "content-type": "application/json",
@@ -317,6 +358,13 @@ describe("quote event webhook", () => {
     expect(String(scheduleSessionTurn.mock.calls[0]?.[0]?.message)).toContain(
       "El recibo ya termino de procesarse.",
     );
+    expect(String(scheduleSessionTurn.mock.calls[0]?.[0]?.message)).toContain(
+      "Cotizacion: SOL20260629-test",
+    );
+    expect(String(scheduleSessionTurn.mock.calls[0]?.[0]?.message)).toContain(
+      "PDF: https://solayre.lovable.app/quotes/SOL20260629-test.pdf",
+    );
+    expect(String(scheduleSessionTurn.mock.calls[0]?.[0]?.message)).toContain("Juan Perez");
     expect(store.jobs[0]?.webhook_resumed_at).toBe(NOW);
   });
 
@@ -330,6 +378,58 @@ describe("quote event webhook", () => {
     await invoke({ body, signature: sign(body), store, sessionWorkflow });
 
     expect(scheduleSessionTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts failed terminal events with error details", async () => {
+    const body = failedEventBody();
+    const store = createStore();
+    const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
+
+    const { res } = await invoke({
+      body,
+      signature: sign(body),
+      store,
+      sessionWorkflow: { scheduleSessionTurn },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(scheduleSessionTurn).toHaveBeenCalledTimes(1);
+    expect(String(scheduleSessionTurn.mock.calls[0]?.[0]?.message)).toContain(
+      "El procesamiento del recibo fallo.",
+    );
+    expect(String(scheduleSessionTurn.mock.calls[0]?.[0]?.message)).toContain(
+      "Error: No se pudo leer el recibo CFE.",
+    );
+    expect(store.jobs[0]?.webhook_resumed_at).toBe(NOW);
+  });
+
+  it("rejects completed events without quote delivery fields", async () => {
+    const body = JSON.stringify({
+      event_id: "evt_missing_delivery_fields",
+      type: "calculation.completed",
+      source: "solayre.parse-and-quote",
+      payload: {
+        request_id: "req_123",
+        quote_id: "quote_123",
+      },
+    });
+    const store = createStore();
+    const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
+
+    const { res } = await invoke({
+      body,
+      signature: sign(body),
+      store,
+      sessionWorkflow: { scheduleSessionTurn },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(String(res.body))).toEqual({
+      ok: false,
+      error: "invalid event envelope",
+    });
+    expect(store.calls).toHaveLength(0);
+    expect(scheduleSessionTurn).not.toHaveBeenCalled();
   });
 
   it("rejects invalid JSON after signature validation", async () => {

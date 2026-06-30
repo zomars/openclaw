@@ -23,6 +23,39 @@ const QuoteEventTypeSchema = z.enum([
   "quote.generated",
 ]);
 
+const BaseQuoteEventPayloadSchema = z
+  .object({
+    request_id: z.string().trim().min(1),
+  })
+  .passthrough();
+
+const TerminalQuoteSuccessPayloadSchema = BaseQuoteEventPayloadSchema.extend({
+  quote_number: z.string().trim().min(1),
+  pdf_url: z.string().trim().min(1),
+  quote_id: z.string().trim().min(1).optional(),
+  customer_name: z.string().trim().min(1).optional(),
+  service_number: z.string().trim().min(1).optional(),
+  summary: z.string().trim().min(1).optional(),
+  quote: z
+    .object({
+      panel_count: z.number().finite().optional(),
+      cash_price: z.number().finite().optional(),
+      financed_price: z.number().finite().optional(),
+      annual_savings: z.number().finite().optional(),
+      coverage_percent: z.number().finite().optional(),
+      payback_years: z.number().finite().optional(),
+      system_kw: z.number().finite().optional(),
+    })
+    .passthrough()
+    .optional(),
+}).passthrough();
+
+const TerminalQuoteFailurePayloadSchema = BaseQuoteEventPayloadSchema.extend({
+  error: z.string().trim().min(1),
+  error_code: z.string().trim().min(1).optional(),
+  retryable: z.boolean().optional(),
+}).passthrough();
+
 const EventEnvelopeSchema = z
   .object({
     event_id: z.string().trim().min(1),
@@ -30,15 +63,36 @@ const EventEnvelopeSchema = z
     source: z.string().trim().min(1),
     subject: z.string().trim().min(1).optional(),
     occurred_at: z.string().trim().min(1).optional(),
-    payload: z
-      .object({
-        request_id: z.string().trim().min(1),
-      })
-      .passthrough(),
+    payload: BaseQuoteEventPayloadSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((event, ctx) => {
+    const successEvent = event.type === "calculation.completed" || event.type === "quote.generated";
+    const terminalSchema =
+      event.type === "calculation.failed"
+        ? TerminalQuoteFailurePayloadSchema
+        : successEvent
+          ? TerminalQuoteSuccessPayloadSchema
+          : null;
+    if (!terminalSchema) {
+      return;
+    }
+
+    const parsed = terminalSchema.safeParse(event.payload);
+    if (parsed.success) {
+      return;
+    }
+    for (const issue of parsed.error.issues) {
+      ctx.addIssue({
+        ...issue,
+        path: ["payload", ...issue.path],
+      });
+    }
+  });
 
 type EventEnvelope = z.infer<typeof EventEnvelopeSchema>;
+type TerminalQuoteSuccessPayload = z.infer<typeof TerminalQuoteSuccessPayloadSchema>;
+type TerminalQuoteFailurePayload = z.infer<typeof TerminalQuoteFailurePayloadSchema>;
 
 export type QuoteEventWebhookHandlerParams = {
   cfg: OpenClawConfig;
@@ -58,6 +112,7 @@ export type QuoteEventWebhookHandlerParams = {
 
 type TerminalQuoteEventEnvelope = EventEnvelope & {
   type: "calculation.completed" | "calculation.failed" | "quote.generated";
+  payload: TerminalQuoteSuccessPayload | TerminalQuoteFailurePayload;
 };
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
@@ -131,11 +186,37 @@ function isTerminalQuoteEvent(envelope: EventEnvelope): envelope is TerminalQuot
   );
 }
 
+function isTerminalSuccessPayload(
+  payload: TerminalQuoteEventEnvelope["payload"],
+): payload is TerminalQuoteSuccessPayload {
+  return "quote_number" in payload && "pdf_url" in payload;
+}
+
+function buildTerminalPayloadSummary(envelope: TerminalQuoteEventEnvelope): string[] {
+  const payload = envelope.payload;
+  if (!isTerminalSuccessPayload(payload)) {
+    return [
+      `Error: ${payload.error}`,
+      ...(payload.error_code ? [`Codigo: ${payload.error_code}`] : []),
+      ...(typeof payload.retryable === "boolean" ? [`Reintentable: ${payload.retryable}`] : []),
+    ];
+  }
+
+  return [
+    `Cotizacion: ${payload.quote_number}`,
+    `PDF: ${payload.pdf_url}`,
+    ...(payload.customer_name ? [`Cliente: ${payload.customer_name}`] : []),
+    ...(payload.service_number ? [`Servicio CFE: ${payload.service_number}`] : []),
+    ...(payload.summary ? [`Resumen: ${payload.summary}`] : []),
+  ];
+}
+
 function buildAgentResumeMessage(params: {
   envelope: TerminalQuoteEventEnvelope;
   job: PendingQuoteJob;
 }): string {
   const payloadJson = JSON.stringify(params.envelope.payload, null, 2);
+  const summary = buildTerminalPayloadSummary(params.envelope);
   const status =
     params.envelope.type === "calculation.failed"
       ? "El procesamiento del recibo fallo."
@@ -148,6 +229,9 @@ function buildAgentResumeMessage(params: {
     `Request ID: ${params.job.request_id}`,
     `Telefono del prospecto: ${params.job.customer_phone}`,
     `Evento: ${params.envelope.type}`,
+    "",
+    "Datos clave:",
+    ...summary,
     "",
     "Payload del calculo:",
     "```json",
