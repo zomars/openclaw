@@ -1,9 +1,13 @@
 import { createHmac } from "node:crypto";
+import fs from "node:fs";
 import type { ServerResponse } from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { WhatsAppLeadBotConfig } from "../config/schema.js";
 import type { PendingQuoteJobStore, QuoteWebhookEventStore } from "../database.js";
+import { SqliteDatabase } from "../database/connection.js";
 import type { PendingQuoteJob, QuoteWebhookEventRow } from "../database/schema.js";
 import {
   createQuoteEventWebhookHandler,
@@ -366,6 +370,53 @@ describe("quote event webhook", () => {
     );
     expect(String(scheduleSessionTurn.mock.calls[0]?.[0]?.message)).toContain("Juan Perez");
     expect(store.jobs[0]?.webhook_resumed_at).toBe(NOW);
+  });
+
+  it("resumes a real SQLite pending quote job from a signed terminal event", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quote-webhook-sqlite-"));
+    const db = new SqliteDatabase({ dbPath: path.join(dir, "lead-bot.db") });
+    db.migrate();
+    try {
+      await db.createPendingQuoteJob({
+        requestId: "req_123",
+        customerPhone: "526121347942",
+        mediaPath: "/tmp/receipt.pdf",
+        agentSessionKey: "agent:main:whatsapp:526121347942",
+        agentSessionId: "session-123",
+        invokingAgentId: "main",
+        nextPollAt: NOW,
+      });
+      const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
+      const body = eventBody("evt_sqlite_123");
+
+      const { res } = await invoke({
+        body,
+        signature: sign(body),
+        store: db,
+        sessionWorkflow: { scheduleSessionTurn },
+      });
+
+      expect(res.statusCode).toBe(202);
+      expect(scheduleSessionTurn).toHaveBeenCalledTimes(1);
+      const job = await db.getPendingQuoteJobByRequestId("req_123");
+      expect(job?.webhook_resumed_at).toBe(NOW);
+
+      const duplicate = await invoke({
+        body,
+        signature: sign(body),
+        store: db,
+        sessionWorkflow: { scheduleSessionTurn },
+      });
+      expect(duplicate.res.statusCode).toBe(202);
+      expect(JSON.parse(String(duplicate.res.body))).toMatchObject({
+        ok: true,
+        duplicate: true,
+      });
+      expect(scheduleSessionTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      await db.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not resume the agent twice for duplicate terminal events", async () => {
