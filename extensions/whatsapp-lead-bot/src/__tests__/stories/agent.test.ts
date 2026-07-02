@@ -513,25 +513,39 @@ describe("Agent / Admin Stories", () => {
     expect(again).toContain("ya está activo");
   });
 
-  it("25. /followup forces immediate follow-up eligibility for a lead", async () => {
+  it("25. /followup sends an immediate follow-up and records the attempt", async () => {
     const { handler, db } = createAdminHandler();
     const lead = await db.getOrCreateLead("+5216671000060");
     await db.updateLeadStatus(lead.id, "qualifying");
     await db.updateFollowUpSentAt(lead.id, Date.now());
+    const sent: { to: string; text: string }[] = [];
+    const runtime = {
+      async sendMessage(to: string, content: { text: string }) {
+        sent.push({ to, text: content.text });
+      },
+    };
 
-    const result = await handler.execute({ type: "followup", phone: "526671000060" });
-    expect(result).toContain("Seguimiento programado");
+    const result = await handler.execute({ type: "followup", phone: "526671000060" }, runtime);
+    expect(result).toContain("Seguimiento enviado");
+    expect(sent).toEqual([
+      {
+        to: "+5216671000060",
+        text: "Hola, ¿pudo conseguir su recibo de CFE? Con él le preparo su cotización personalizada sin costo.",
+      },
+    ]);
 
     const updated = await db.getLeadByPhone("+5216671000060");
-    expect(updated!.follow_up_sent_at).toBe(0);
-    // last_message_at should be ~25h ago
-    const twentyFiveHoursMs = 25 * 60 * 60 * 1000;
-    expect(Date.now() - updated!.last_message_at).toBeGreaterThan(twentyFiveHoursMs - 5000);
+    expect(updated!.follow_up_attempts).toBe(1);
+    expect(updated!.follow_up_sent_at).toBeGreaterThan(0);
+    expect(updated!.last_bot_reply_at).toBeGreaterThan(0);
 
     // Blocked lead
     const blockedLead = await db.getOrCreateLead("+5216671000061");
     await db.updateLeadStatus(blockedLead.id, "blocked");
-    const blockedResult = await handler.execute({ type: "followup", phone: "526671000061" });
+    const blockedResult = await handler.execute(
+      { type: "followup", phone: "526671000061" },
+      runtime,
+    );
     expect(blockedResult).toContain("bloqueado");
   });
 
@@ -572,6 +586,8 @@ describe("Agent / Admin Stories", () => {
     const result = await handler.execute({ type: "help" });
 
     expect(result).toContain("Admin Commands");
+    expect(result).toContain("/followup <phone> - Enviar seguimiento inmediato a un lead");
+    expect(result).not.toContain("próximo ciclo");
     for (const cmd of [
       "/status",
       "/block",

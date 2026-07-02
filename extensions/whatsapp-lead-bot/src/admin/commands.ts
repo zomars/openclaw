@@ -20,6 +20,25 @@ import type { SessionResetter } from "../session-resetter.js";
 import { formatTimeAgo } from "../utils/format.js";
 import { normalizePhone } from "../utils/phone.js";
 
+const RECEIPT_FOLLOWUP_TEXT =
+  "Hola, ¿pudo conseguir su recibo de CFE? Con él le preparo su cotización personalizada sin costo.";
+const SURVEY_TEXT =
+  "Hola, anteriormente intenté contactarle para brindarle información sobre paneles solares.\n\n" +
+  "Antes de pausar su solicitud, me gustaría saber qué pasó.\n" +
+  "Sin presión, solo para entender mejor su situación:\n\n" +
+  "1. No he podido conseguir mi recibo CFE\n" +
+  "2. No tengo capital disponible ahorita\n" +
+  "3. Solo investigaba precios, no voy a instalar este año\n" +
+  "4. Contácteme más adelante\n" +
+  "5. Ya contraté con otra empresa\n\n" +
+  "Solo responda con el número que aplique.";
+
+type FollowupLeadUpdate = {
+  follow_up_sent_at: number;
+  follow_up_attempts: number;
+  survey_sent_at?: number;
+};
+
 export type AdminCommand =
   | { type: "status"; phone: string }
   | { type: "block"; phone: string; reason: string }
@@ -79,7 +98,9 @@ export class AdminCommandHandler {
     this.register("reset-breaker", () => this.handleResetBreaker());
     this.register("sync-leads", () => this.handleSyncLeads());
     this.register("sync-labels", (_cmd, runtime) => this.handleSyncLabels(runtime));
-    this.register("followup", (cmd) => this.handleFollowup((cmd as { phone: string }).phone));
+    this.register("followup", (cmd, runtime) =>
+      this.handleFollowup((cmd as { phone: string }).phone, runtime),
+    );
     this.register("pending", () => this.handlePending());
     this.register("pause", () => this.handlePause());
     this.register("resume", () => this.handleResume());
@@ -591,10 +612,13 @@ export class AdminCommandHandler {
     ].join("\n");
   }
 
-  private async handleFollowup(phone: string): Promise<string> {
+  private async handleFollowup(phone: string, runtime?: Runtime): Promise<string> {
     const lead = await this.findLead(phone);
     if (!lead) {
       return `Lead not found: ${phone}`;
+    }
+    if (!runtime) {
+      return "❌ No se pudo enviar el seguimiento: runtime de WhatsApp no disponible.";
     }
 
     if (lead.status === "blocked") {
@@ -604,13 +628,24 @@ export class AdminCommandHandler {
       return `⚠️ Lead está en handoff. Usa /takeback primero.`;
     }
 
-    // Reset follow_up_sent_at so the lead becomes eligible for the next follow-up cycle
-    await this.db.updateFollowUpSentAt(lead.id, 0);
-    // Set last_message_at to 25 hours ago so it passes the silence threshold immediately
-    const twentyFiveHoursAgo = Date.now() - 25 * 60 * 60 * 1000;
-    await this.db.updateLeadTimestamp(lead.id, twentyFiveHoursAgo);
+    const previousAttempts = Number(lead.follow_up_attempts ?? 0);
+    const now = Date.now();
+    const sendsSurvey = previousAttempts >= 2;
+    const message = sendsSurvey ? SURVEY_TEXT : RECEIPT_FOLLOWUP_TEXT;
 
-    return `✅ Seguimiento programado: ${phone}\nEl lead será contactado en el próximo ciclo de follow-up (~15 min max).`;
+    await runtime.sendMessage(lead.phone_number, {
+      text: message,
+      metadata: { openclawInitiated: true, adminCommand: "followup" },
+    });
+    const followupUpdate: FollowupLeadUpdate = {
+      follow_up_sent_at: now,
+      follow_up_attempts: previousAttempts + 1,
+      ...(sendsSurvey ? { survey_sent_at: now } : {}),
+    };
+    await this.db.upsertLead(lead.phone_number, followupUpdate as never);
+    await this.db.updateLastBotReply(lead.id, now);
+
+    return `✅ Seguimiento enviado: ${lead.phone_number}`;
   }
 
   private async handlePending(): Promise<string> {
@@ -676,7 +711,7 @@ export class AdminCommandHandler {
   }
 
   private handleHelp(): string {
-    return `**Admin Commands**\n\n/status <phone> - View lead status\n/block <phone> [reason] - Block lead\n/unblock <phone> - Unblock lead\n/handoff <phone> - Force handoff\n/takeback <phone> - Undo handoff, bot resumes\n/reset-lead <phone> - Reset lead state & qualification\n/clear-limit <phone> - Clear rate limit\n/score <phone> <HOT|WARM|COLD|OUT> - Set lead score & apply label\n/recent [N] - List N recent leads\n/sync-leads - Recalcular scores de todos los leads\n/sync-labels - Recalcular scores + sincronizar etiquetas WhatsApp\n/followup <phone> - Forzar seguimiento inmediato a un lead\n/pending - Ver leads sin respuesta del bot\n/pause - Pausar el bot (no responde a nadie)\n/resume - Reactivar el bot\n/rate-status - View rate limit & circuit breaker status\n/reset-breaker - Reset circuit breaker\n/help - Show this help`;
+    return `**Admin Commands**\n\n/status <phone> - View lead status\n/block <phone> [reason] - Block lead\n/unblock <phone> - Unblock lead\n/handoff <phone> - Force handoff\n/takeback <phone> - Undo handoff, bot resumes\n/reset-lead <phone> - Reset lead state & qualification\n/clear-limit <phone> - Clear rate limit\n/score <phone> <HOT|WARM|COLD|OUT> - Set lead score & apply label\n/recent [N] - List N recent leads\n/sync-leads - Recalcular scores de todos los leads\n/sync-labels - Recalcular scores + sincronizar etiquetas WhatsApp\n/followup <phone> - Enviar seguimiento inmediato a un lead\n/pending - Ver leads sin respuesta del bot\n/pause - Pausar el bot (no responde a nadie)\n/resume - Reactivar el bot\n/rate-status - View rate limit & circuit breaker status\n/reset-breaker - Reset circuit breaker\n/help - Show this help`;
   }
 
   // --- Shared helpers ---
