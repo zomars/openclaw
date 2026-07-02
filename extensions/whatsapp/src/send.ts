@@ -338,6 +338,24 @@ export async function sendReactionWhatsApp(
   }
 }
 
+export async function fetchMessageHistoryWhatsApp(
+  count: number,
+  oldestMsgKey: { remoteJid: string; fromMe: boolean; id: string },
+  oldestMsgTimestamp: number,
+  options: { accountId?: string },
+): Promise<string> {
+  const resolvedAccountId = options.accountId?.trim() || "default";
+  const active =
+    getRegisteredWhatsAppConnectionController(resolvedAccountId)?.getActiveListener() ?? null;
+  if (!active) {
+    throw new Error(`No active WhatsApp Web listener (account: ${resolvedAccountId}).`);
+  }
+  if (typeof active.fetchMessageHistory !== "function") {
+    throw new Error("fetchMessageHistory is not available on the active WhatsApp listener.");
+  }
+  return await active.fetchMessageHistory(count, oldestMsgKey, oldestMsgTimestamp);
+}
+
 export async function sendPollWhatsApp(
   to: string,
   poll: PollInput,

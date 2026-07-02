@@ -58,6 +58,12 @@ type WebChannelLightRuntimeModule = {
 };
 
 type WebChannelHeavyRuntimeModule = {
+  fetchMessageHistoryWhatsApp?: (
+    count: number,
+    oldestMsgKey: { remoteJid: string; fromMe: boolean; id: string },
+    oldestMsgTimestamp: number,
+    options: { accountId?: string },
+  ) => Promise<unknown>;
   loginWeb: (
     verbose: boolean,
     waitForConnection?: (sock: unknown) => Promise<void>,
@@ -268,6 +274,20 @@ export function sendWebChannelMessage(
   ...args: Parameters<WebChannelHeavyRuntimeModule["sendMessageWhatsApp"]>
 ): ReturnType<WebChannelHeavyRuntimeModule["sendMessageWhatsApp"]> {
   return loadWebChannelHeavyModule().then((loaded) => loaded.sendMessageWhatsApp(...args));
+}
+
+/** Fetches WhatsApp message history through the active web-channel listener. */
+export async function fetchWebChannelMessageHistory(
+  count: number,
+  oldestMsgKey: { remoteJid: string; fromMe: boolean; id: string },
+  oldestMsgTimestamp: number,
+  options: { accountId?: string },
+): Promise<unknown> {
+  const loaded = await loadWebChannelHeavyModule();
+  if (typeof loaded.fetchMessageHistoryWhatsApp !== "function") {
+    throw new Error("web channel plugin runtime does not expose fetchMessageHistoryWhatsApp");
+  }
+  return await loaded.fetchMessageHistoryWhatsApp(count, oldestMsgKey, oldestMsgTimestamp, options);
 }
 
 /** Sends a web-channel poll through the heavy runtime API. */

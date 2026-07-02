@@ -68,6 +68,7 @@ export {
   type WebMediaResult,
 } from "./src/media.js";
 export {
+  fetchMessageHistoryWhatsApp,
   sendMessageWhatsApp,
   sendPollWhatsApp,
   sendReactionWhatsApp,

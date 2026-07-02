@@ -1633,6 +1633,8 @@
     "prepare": "node scripts/prepare-git-hooks.mjs",
     "prepush:ci": "bash scripts/prepush-ci.sh",
     "probe:anthropic:prompt": "node --import tsx scripts/anthropic-prompt-probe.ts",
+    "prototype:whatsapp-history": "node --import tsx extensions/whatsapp/src/prototypes/history-capture-prototype.ts",
+    "prototype:whatsapp-native-history": "node --import tsx extensions/whatsapp/src/prototypes/native-history-extract.ts",
     "prompt:snapshots:check": "node --import tsx scripts/generate-prompt-snapshots.ts --check",
     "prompt:snapshots:gen": "node --import tsx scripts/generate-prompt-snapshots.ts --write",
     "prompt:snapshots:sync-codex-model": "node --import tsx scripts/sync-codex-model-prompt-fixture.ts",

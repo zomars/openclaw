@@ -19,8 +19,8 @@ import {
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { maybeResolveWhatsAppApprovalReaction } from "../approval-reactions.js";
 import { emitEnrichedWhatsAppMessage, emitRawWhatsAppMessage } from "../active-listener.js";
+import { maybeResolveWhatsAppApprovalReaction } from "../approval-reactions.js";
 import { readWebSelfIdentityForDecision, WhatsAppAuthUnstableError } from "../auth-store.js";
 import { getRegisteredWhatsAppConnectionController } from "../connection-controller-registry.js";
 import { getPrimaryIdentityId, identitiesOverlap, resolveComparableIdentity } from "../identity.js";
@@ -1375,6 +1375,16 @@ export async function attachWebInboxToSocket(
         }
         return currentSock.sendPresenceUpdate(presenceLocal, jid);
       },
+      fetchMessageHistory: async (count, oldestMsgKey, oldestMsgTimestamp) => {
+        const currentSock = getCurrentSock();
+        if (!currentSock) {
+          throw new Error(RECONNECT_IN_PROGRESS_ERROR);
+        }
+        if (!currentSock.fetchMessageHistory) {
+          throw new Error("fetchMessageHistory not available on this socket");
+        }
+        return currentSock.fetchMessageHistory(count, oldestMsgKey, oldestMsgTimestamp);
+      },
     },
     defaultAccountId: options.accountId,
     resolveOutboundMentions: ({ jid, text }) => resolveOutboundMentionsForGroup(jid, text),
@@ -1404,6 +1414,7 @@ export async function attachWebInboxToSocket(
     sendMessage: sendApi.sendMessage,
     sendPoll: sendApi.sendPoll,
     sendReaction: sendApi.sendReaction,
+    fetchMessageHistory: sendApi.fetchMessageHistory,
   } as const;
 }
 
