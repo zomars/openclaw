@@ -346,6 +346,7 @@ describe("whatsapp inbound dispatch", () => {
       BodyForCommands: "hi",
       RawBody: "hi",
       CommandBody: "hi",
+      AgentId: "main",
       Timestamp: 1737158400000,
       SenderId: "+15550002222",
       SenderE164: "+15550002222",

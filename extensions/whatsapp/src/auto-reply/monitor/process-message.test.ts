@@ -6,6 +6,7 @@ import { createAcceptedWhatsAppSendResult } from "../../inbound/send-result.test
 const {
   resolvePolicyMock,
   buildContextMock,
+  dispatchWhatsAppBufferedReplyMock,
   isControlCommandMessageMock,
   runMessageReceivedMock,
   shouldComputeCommandAuthorizedMock,
@@ -13,6 +14,10 @@ const {
 } = vi.hoisted(() => ({
   resolvePolicyMock: vi.fn(),
   buildContextMock: vi.fn(),
+  dispatchWhatsAppBufferedReplyMock: vi.fn(async () => ({
+    queuedFinal: false,
+    counts: { tool: 0, block: 0, final: 0 },
+  })),
   isControlCommandMessageMock: vi.fn(() => false),
   runMessageReceivedMock: vi.fn(async () => undefined),
   shouldComputeCommandAuthorizedMock: vi.fn(() => false),
@@ -33,17 +38,14 @@ vi.mock("./inbound-dispatch.js", async (importOriginal) => {
   return {
     ...actual,
     buildWhatsAppInboundContext: buildContextMock,
-    dispatchWhatsAppBufferedReply: async () => ({
-      queuedFinal: false,
-      counts: { tool: 0, block: 0, final: 0 },
-    }),
+    dispatchWhatsAppBufferedReply: dispatchWhatsAppBufferedReplyMock,
     resolveWhatsAppDmRouteTarget: () => null,
     resolveWhatsAppResponsePrefix: () => undefined,
     updateWhatsAppMainLastRoute: () => {},
   };
 });
 
-vi.mock("openclaw/plugin-sdk/plugin-runtime", () => ({
+vi.mock("../../../../../src/plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: () => ({
     hasHooks: (hookName: string) => hookName === "message_received",
     runMessageReceived: runMessageReceivedMock,
@@ -249,6 +251,7 @@ function mockCallArg(mockFn: ReturnType<typeof vi.fn>, label: string, callIndex 
 describe("processMessage group system prompt wiring", () => {
   beforeEach(() => {
     buildContextMock.mockReset();
+    dispatchWhatsAppBufferedReplyMock.mockClear();
     isControlCommandMessageMock.mockReset();
     isControlCommandMessageMock.mockReturnValue(false);
     resolvePolicyMock.mockReset();
@@ -456,6 +459,57 @@ describe("processMessage group system prompt wiring", () => {
 
     expect(runMessageReceivedMock).not.toHaveBeenCalled();
     expect(internalReceived).not.toHaveBeenCalled();
+  });
+
+  it("honors message_received hook suppression before dispatching to the agent", async () => {
+    resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
+    runMessageReceivedMock.mockResolvedValueOnce({ suppress: true } as never);
+
+    const didSendReply = await callProcessMessage({
+      cfg: {
+        channels: {
+          whatsapp: {
+            pluginHooks: {
+              messageReceived: true,
+            },
+          },
+        },
+      },
+    });
+
+    expect(didSendReply).toBe(false);
+    expect(runMessageReceivedMock).toHaveBeenCalledTimes(1);
+    expect(dispatchWhatsAppBufferedReplyMock).not.toHaveBeenCalled();
+  });
+
+  it("applies message_received content rewrites before dispatching to the agent", async () => {
+    resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
+    runMessageReceivedMock.mockResolvedValueOnce({ content: "rewritten lead text" } as never);
+
+    await callProcessMessage({
+      cfg: {
+        channels: {
+          whatsapp: {
+            pluginHooks: {
+              messageReceived: true,
+            },
+          },
+        },
+      },
+    });
+
+    expect(dispatchWhatsAppBufferedReplyMock).toHaveBeenCalledTimes(1);
+    const dispatchArg = mockCallArg(
+      dispatchWhatsAppBufferedReplyMock,
+      "dispatch WhatsApp buffered reply",
+    ) as Record<string, unknown>;
+    expect(dispatchArg.context).toMatchObject({
+      Body: "rewritten lead text",
+      RawBody: "rewritten lead text",
+      BodyForAgent: "rewritten lead text",
+      BodyForCommands: "rewritten lead text",
+      CommandBody: "rewritten lead text",
+    });
   });
 
   it("tracks session metadata writes as connection background tasks", async () => {

@@ -242,6 +242,14 @@ vi.mock("./dispatch-from-config.runtime.js", () => ({
   triggerInternalHook: internalHookMocks.triggerInternalHook,
   updateSessionStoreEntry: sessionStoreMocks.updateSessionStoreEntry,
 }));
+vi.mock("../../hooks/internal-hooks.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../hooks/internal-hooks.js")>();
+  return {
+    ...actual,
+    createInternalHookEvent: internalHookMocks.createInternalHookEvent,
+    triggerInternalHook: internalHookMocks.triggerInternalHook,
+  };
+});
 vi.mock("../../plugins/hook-runner-global.js", () => ({
   initializeGlobalHookRunner: vi.fn(),
   getGlobalHookRunner: () => hookMocks.runner,

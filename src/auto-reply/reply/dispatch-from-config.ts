@@ -52,15 +52,12 @@ import {
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
-import { fireAndForgetHook } from "../../hooks/fire-and-forget.js";
 import {
   deriveInboundMessageHookContext,
   toPluginInboundClaimContext,
   toPluginInboundClaimEvent,
-  toInternalMessageReceivedContext,
-  toPluginMessageContext,
-  toPluginMessageReceivedEvent,
 } from "../../hooks/message-hook-mappers.js";
+import { runMessageReceivedAdmissionHooks } from "../../hooks/message-received-admission.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -129,12 +126,10 @@ import {
 } from "./command-session-metadata.js";
 import { resolveConversationBindingContextFromMessage } from "./conversation-binding-input.js";
 import {
-  createInternalHookEvent,
   loadSessionStore,
   readSessionEntry,
   resolveSessionStoreEntry,
   resolveStorePath,
-  triggerInternalHook,
   updateSessionStoreEntry,
 } from "./dispatch-from-config.runtime.js";
 import type {
@@ -2077,48 +2072,29 @@ export async function dispatchReplyFromConfig(
     }
   }
 
-  // Trigger plugin hooks and check for message suppression.
-  // Fork preserves the await-and-check-suppress pattern (vs upstream's fire-and-forget)
-  // because the whatsapp-lead-bot's conversation-ingest hook returns `{ suppress: true }`
-  // to block messages from reaching the agent and `{ content: "..." }` to rewrite them.
-  if (ctx.SuppressMessageReceivedHooks !== true && hookRunner?.hasHooks("message_received")) {
-    const hookResult = await hookRunner
-      .runMessageReceived(
-        toPluginMessageReceivedEvent(hookContext),
-        toPluginMessageContext(hookContext),
-      )
-      .catch((err) => {
-        logVerbose(`dispatch-from-config: message_received plugin hook failed: ${String(err)}`);
-        return undefined;
-      });
+  // Admission hooks may suppress a turn or rewrite its content before any agent dispatch.
+  if (ctx.SuppressMessageReceivedHooks !== true) {
+    const admission = await runMessageReceivedAdmissionHooks({
+      canonical: hookContext,
+      sessionKey,
+      pluginFailureLogLabel: "dispatch-from-config: message_received plugin hook failed",
+      internalFailureLogLabel: "dispatch-from-config: message_received internal hook failed",
+      ...(timestamp !== undefined ? { internalHookContext: { timestamp } } : {}),
+      logger: logVerbose,
+    });
 
-    // Check if message should be suppressed
-    if (hookResult?.suppress) {
+    if (admission.suppressed) {
       recordProcessed("skipped", { reason: "suppressed_by_hook" });
       return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
     }
 
-    // Apply content rewrite from plugin hook
-    if (hookResult?.content != null) {
-      ctx.Body = hookResult.content;
-      ctx.RawBody = hookResult.content;
+    if (admission.content != null) {
+      ctx.Body = admission.content;
+      ctx.RawBody = admission.content;
       if (ctx.BodyForCommands != null) {
-        ctx.BodyForCommands = hookResult.content;
+        ctx.BodyForCommands = admission.content;
       }
     }
-  }
-
-  // Bridge to internal hooks (HOOK.md discovery system) - refs #8807
-  if (ctx.SuppressMessageReceivedHooks !== true && sessionKey) {
-    fireAndForgetHook(
-      triggerInternalHook(
-        createInternalHookEvent("message", "received", sessionKey, {
-          ...toInternalMessageReceivedContext(hookContext),
-          timestamp,
-        }),
-      ),
-      "dispatch-from-config: message_received internal hook failed",
-    );
   }
 
   markProcessing();

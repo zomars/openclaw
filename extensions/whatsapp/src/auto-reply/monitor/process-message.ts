@@ -10,15 +10,10 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 import { recordInboundSession } from "openclaw/plugin-sdk/conversation-runtime";
 import {
-  createInternalHookEvent,
   deriveInboundMessageHookContext,
-  fireAndForgetBoundedHook,
-  toInternalMessageReceivedContext,
-  toPluginMessageContext,
-  toPluginMessageReceivedEvent,
-  triggerInternalHook,
+  runMessageReceivedAdmissionHooks,
+  type MessageReceivedAdmissionResult,
 } from "openclaw/plugin-sdk/hook-runtime";
-import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
 import { resolveBatchedReplyThreadingPolicy } from "openclaw/plugin-sdk/reply-reference";
 import { getPrimaryIdentityId, getSelfIdentity, getSenderIdentity } from "../../identity.js";
 import {
@@ -144,56 +139,37 @@ function shouldEmitWhatsAppMessageReceivedHooks(params: {
   );
 }
 
-function emitWhatsAppMessageReceivedHooks(params: {
+async function emitWhatsAppMessageReceivedHooks(params: {
   ctx: Awaited<ReturnType<typeof buildWhatsAppInboundContext>>;
   sessionKey: string;
-}): void {
+}): Promise<MessageReceivedAdmissionResult> {
   const canonical = deriveInboundMessageHookContext(params.ctx);
-  const hookRunner = getGlobalHookRunner();
-  if (hookRunner?.hasHooks("message_received")) {
-    fireAndForgetBoundedHook(
-      () =>
-        hookRunner.runMessageReceived(
-          toPluginMessageReceivedEvent(canonical),
-          toPluginMessageContext(canonical),
-        ),
-      "whatsapp: message_received plugin hook failed",
-      undefined,
-      WHATSAPP_MESSAGE_RECEIVED_HOOK_LIMITS,
-    );
-  }
-  fireAndForgetBoundedHook(
-    () =>
-      triggerInternalHook(
-        createInternalHookEvent(
-          "message",
-          "received",
-          params.sessionKey,
-          toInternalMessageReceivedContext(canonical),
-        ),
-      ),
-    "whatsapp: message_received internal hook failed",
-    undefined,
-    WHATSAPP_MESSAGE_RECEIVED_HOOK_LIMITS,
-  );
+  return await runMessageReceivedAdmissionHooks({
+    canonical,
+    sessionKey: params.sessionKey,
+    pluginFailureLogLabel: "whatsapp: message_received plugin hook failed",
+    internalFailureLogLabel: "whatsapp: message_received internal hook failed",
+    internalHookLimits: WHATSAPP_MESSAGE_RECEIVED_HOOK_LIMITS,
+    logger: logVerbose,
+  });
 }
 
-function emitWhatsAppMessageReceivedHooksIfEnabled(params: {
+async function emitWhatsAppMessageReceivedHooksIfEnabled(params: {
   cfg: ReturnType<LoadConfigFn>;
   ctx: Awaited<ReturnType<typeof buildWhatsAppInboundContext>>;
   accountId?: string;
   sessionKey: string;
-}): void {
+}): Promise<MessageReceivedAdmissionResult | undefined> {
   if (
     !shouldEmitWhatsAppMessageReceivedHooks({
       cfg: params.cfg,
       accountId: params.accountId,
     })
   ) {
-    return;
+    return undefined;
   }
 
-  emitWhatsAppMessageReceivedHooks({
+  return await emitWhatsAppMessageReceivedHooks({
     ctx: params.ctx,
     sessionKey: params.sessionKey,
   });
@@ -542,12 +518,23 @@ export async function processMessage(params: {
     visibleReplyTo: visibleReplyTo ?? undefined,
     suppressMessageReceivedHooks: true,
   });
-  emitWhatsAppMessageReceivedHooksIfEnabled({
+  const hookResult = await emitWhatsAppMessageReceivedHooksIfEnabled({
     cfg: params.cfg,
     ctx: ctxPayload,
     accountId: params.route.accountId,
     sessionKey: params.route.sessionKey,
   });
+  if (hookResult?.suppressed) {
+    statusReactionController?.cancelPending();
+    return false;
+  }
+  if (hookResult?.content != null) {
+    ctxPayload.Body = hookResult.content;
+    ctxPayload.RawBody = hookResult.content;
+    ctxPayload.BodyForAgent = hookResult.content;
+    ctxPayload.CommandBody = hookResult.content;
+    ctxPayload.BodyForCommands = hookResult.content;
+  }
 
   const pinnedMainDmRecipient = resolvePinnedMainDmRecipient({
     cfg: params.cfg,

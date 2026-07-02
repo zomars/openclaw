@@ -446,6 +446,15 @@ vi.mock("./dispatch-from-config.runtime.js", () => ({
   updateSessionStoreEntry: sessionStoreMocks.updateSessionStoreEntry,
 }));
 
+vi.mock("../../hooks/internal-hooks.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../hooks/internal-hooks.js")>();
+  return {
+    ...actual,
+    createInternalHookEvent: internalHookMocks.createInternalHookEvent,
+    triggerInternalHook: internalHookMocks.triggerInternalHook,
+  };
+});
+
 vi.mock("../../plugins/hook-runner-global.js", () => ({
   initializeGlobalHookRunner: vi.fn(),
   getGlobalHookRunner: () => hookMocks.runner,
@@ -5459,6 +5468,67 @@ describe("dispatchReplyFromConfig", () => {
     expect(hookContext?.channelId).toBe("telegram");
     expect(hookContext?.accountId).toBe("acc-1");
     expect(hookContext?.conversationId).toBe("telegram:999");
+  });
+
+  it("suppresses dispatch when message_received admission returns suppress", async () => {
+    setNoAbort();
+    hookMocks.runner.hasHooks.mockImplementation(
+      ((hookName?: string) => hookName === "message_received") as () => boolean,
+    );
+    hookMocks.runner.runMessageReceived.mockResolvedValueOnce({ suppress: true } as never);
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      OriginatingChannel: "telegram",
+      OriginatingTo: "telegram:999",
+      CommandBody: "/recent",
+      RawBody: "/recent",
+      Body: "/recent",
+      SessionKey: "agent:main:telegram:999",
+    });
+    const replyResolver = vi.fn(async () => ({ text: "hi" }) satisfies ReplyPayload);
+
+    const result = await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(result).toEqual({ queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } });
+    expect(hookMocks.runner.runMessageReceived).toHaveBeenCalledTimes(1);
+    expect(replyResolver).not.toHaveBeenCalled();
+  });
+
+  it("applies message_received admission content rewrites before dispatch", async () => {
+    setNoAbort();
+    hookMocks.runner.hasHooks.mockImplementation(
+      ((hookName?: string) => hookName === "message_received") as () => boolean,
+    );
+    hookMocks.runner.runMessageReceived.mockResolvedValueOnce({
+      content: "rewritten shared text",
+    } as never);
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      Surface: "telegram",
+      OriginatingChannel: "telegram",
+      OriginatingTo: "telegram:999",
+      CommandBody: "original",
+      RawBody: "original",
+      Body: "original",
+      BodyForCommands: "original",
+      SessionKey: "agent:main:telegram:999",
+    });
+    const replyResolver = vi.fn(async (receivedCtx: MsgContext) => {
+      expect(receivedCtx.Body).toBe("rewritten shared text");
+      expect(receivedCtx.RawBody).toBe("rewritten shared text");
+      expect(receivedCtx.BodyForCommands).toBe("rewritten shared text");
+      return { text: "hi" } satisfies ReplyPayload;
+    });
+
+    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+
+    expect(hookMocks.runner.runMessageReceived).toHaveBeenCalledTimes(1);
+    expect(replyResolver).toHaveBeenCalledTimes(1);
   });
 
   it("does not emit shared message_received hooks when the channel emitted them itself", async () => {
