@@ -1964,6 +1964,9 @@ export async function runReplyAgent(params: {
       return returnWithQueuedFollowupDrain(silentFallbackFailurePayload);
     };
 
+    const fallbackNoticeRequiresOwner = followupRun.run.agentId === "solayre-leads";
+    const canShowFallbackNoticeToRequester =
+      !fallbackNoticeRequiresOwner || followupRun.run.senderIsOwner === true;
     const fallbackNoticePayloads: ReplyPayload[] = [];
     if (!preserveUserFacingSessionState && fallbackTransition.fallbackTransitioned) {
       emitAgentEvent({
@@ -1989,7 +1992,7 @@ export async function runReplyAgent(params: {
         attempts: fallbackAttempts,
         cfg,
       });
-      if (fallbackNotice) {
+      if (fallbackNotice && canShowFallbackNoticeToRequester) {
         fallbackNoticePayloads.push(
           markReplyPayloadForSourceSuppressionDelivery({
             text: fallbackNotice,
@@ -2012,16 +2015,18 @@ export async function runReplyAgent(params: {
           previousActiveModel: fallbackTransition.previousState.activeModel,
         },
       });
-      fallbackNoticePayloads.push(
-        markReplyPayloadForSourceSuppressionDelivery({
-          text: buildFallbackClearedNotice({
-            selectedProvider,
-            selectedModel,
-            previousActiveModel: fallbackTransition.previousState.activeModel,
+      if (canShowFallbackNoticeToRequester) {
+        fallbackNoticePayloads.push(
+          markReplyPayloadForSourceSuppressionDelivery({
+            text: buildFallbackClearedNotice({
+              selectedProvider,
+              selectedModel,
+              previousActiveModel: fallbackTransition.previousState.activeModel,
+            }),
+            isFallbackNotice: true,
           }),
-          isFallbackNotice: true,
-        }),
-      );
+        );
+      }
     }
 
     // Drain any late tool/block deliveries before deciding there's "nothing to send".

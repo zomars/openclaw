@@ -192,6 +192,7 @@ function createMinimalRun(params?: {
       skillsSnapshot: {},
       provider: "anthropic",
       model: "claude",
+      senderIsOwner: true,
       thinkLevel: "low",
       verboseLevel: params?.resolvedVerboseLevel ?? "off",
       elevatedLevel: "off",
@@ -1128,6 +1129,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
 
       const { run } = createMinimalRun({
         resolvedVerboseLevel: testCase.verbose,
+        runOverrides: { senderIsOwner: true },
         sessionEntry,
         sessionStore,
         sessionKey: "main",
@@ -1153,6 +1155,110 @@ describe("runReplyAgent typing (heartbeat)", () => {
       ).toHaveLength(1);
       expect(phases, testCase.name).toContain("fallback_step");
     }
+  });
+
+  it("keeps solayre-leads fallback notices out of non-owner visible replies", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { main: sessionEntry };
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {},
+    });
+    vi.spyOn(modelFallbackModule, "runWithModelFallback").mockImplementationOnce(async (args) => {
+      const { run, onFallbackStep } = args;
+      await onFallbackStep?.({
+        fallbackStepType: "fallback_step",
+        fallbackStepFromModel: "anthropic/claude",
+        fallbackStepToModel: "openai/gpt-5.5",
+        fallbackStepFromFailureReason: "rate_limit",
+        fallbackStepFinalOutcome: "succeeded",
+      });
+      return {
+        result: await run("openai", "gpt-5.5"),
+        provider: "openai",
+        model: "gpt-5.5",
+        attempts: [
+          {
+            provider: "anthropic",
+            model: "claude",
+            error: "rate limited",
+            reason: "rate_limit",
+          },
+        ],
+      };
+    });
+
+    const { run } = createMinimalRun({
+      resolvedVerboseLevel: "on",
+      runOverrides: { agentId: "solayre-leads", senderIsOwner: false },
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+    });
+    const phases: string[] = [];
+    const off = onAgentEvent((evt) => {
+      const phase = typeof evt.data?.phase === "string" ? evt.data.phase : null;
+      if (evt.stream === "lifecycle" && phase) {
+        phases.push(phase);
+      }
+    });
+    const res = await run();
+    off();
+    const payloads = Array.isArray(res) ? res : res ? [res] : [];
+    expect(payloads.some((payload) => payload.text?.includes("Model Fallback:"))).toBe(false);
+    expect(payloads.at(0)?.text).toBe("final");
+    expect(sessionEntry.fallbackNoticeReason).toBe("rate limit");
+    expect(phases).toContain("fallback");
+  });
+
+  it("keeps non-owner fallback notices visible for other agents", async () => {
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+    };
+    const sessionStore = { main: sessionEntry };
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {},
+    });
+    vi.spyOn(modelFallbackModule, "runWithModelFallback").mockImplementationOnce(async (args) => {
+      const { run, onFallbackStep } = args;
+      await onFallbackStep?.({
+        fallbackStepType: "fallback_step",
+        fallbackStepFromModel: "anthropic/claude",
+        fallbackStepToModel: "openai/gpt-5.5",
+        fallbackStepFromFailureReason: "rate_limit",
+        fallbackStepFinalOutcome: "succeeded",
+      });
+      return {
+        result: await run("openai", "gpt-5.5"),
+        provider: "openai",
+        model: "gpt-5.5",
+        attempts: [
+          {
+            provider: "anthropic",
+            model: "claude",
+            error: "rate limited",
+            reason: "rate_limit",
+          },
+        ],
+      };
+    });
+
+    const { run } = createMinimalRun({
+      resolvedVerboseLevel: "on",
+      runOverrides: { agentId: "general-agent", senderIsOwner: false },
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+    });
+    const res = await run();
+    const payloads = Array.isArray(res) ? res : res ? [res] : [];
+    expect(payloads[0]?.text).toContain("Model Fallback:");
+    expect(payloads[1]?.text).toBe("final");
   });
 
   it("does not persist active fallback state for internal subagent announce fallback", async () => {
