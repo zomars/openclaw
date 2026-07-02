@@ -24,6 +24,17 @@ import type {
   QuoteWebhookEventRow,
 } from "./database/schema.js";
 
+export interface DeliveredQuoteAccess {
+  request_id: string;
+  customer_phone: string;
+  quote_id: string;
+  quote_number: string;
+  quote_access_token_id: string;
+  quote_access_url: string;
+  quote_access_expires_at: number | null;
+  completed_at: number | null;
+}
+
 // --- Role interfaces ---
 
 export interface LeadRepository {
@@ -139,6 +150,11 @@ export interface PendingQuoteJobStore {
       } | null;
     },
   ): Promise<void>;
+  getLatestDeliveredQuoteAccess(input: {
+    customerPhones: string[];
+    quoteNumber?: string | null;
+    now?: number;
+  }): Promise<DeliveredQuoteAccess | null>;
   markPendingQuoteJobFailed(
     id: number,
     input: {

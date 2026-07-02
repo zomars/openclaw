@@ -3,6 +3,7 @@ import { createFakeRuntime } from "../__tests__/helpers/fake-runtime.js";
 import { createTestDb } from "../__tests__/helpers/tmp-db.js";
 import { InMemoryLeadEventLog } from "../crm-memory/lead-events.js";
 import type { PendingQuoteJobStore } from "../database.js";
+import type { DeliveredQuoteAccess } from "../database.js";
 import type { PendingQuoteJob } from "../database/schema.js";
 import { processLeadCFEReceiptTool } from "../tools/process-lead-cfe-receipt.js";
 import type { ParseAndQuoteResult, QuoteRequestCheckResult } from "./parse-and-quote-client.js";
@@ -101,6 +102,10 @@ class MemoryPendingQuoteStore implements PendingQuoteJobStore {
     job.quote_access_url = input.quoteAccess?.url ?? null;
     job.quote_access_expires_at = input.quoteAccess?.expiresAt ?? null;
     job.completed_at = Date.now();
+  }
+
+  async getLatestDeliveredQuoteAccess(): Promise<DeliveredQuoteAccess | null> {
+    return null;
   }
 
   async markPendingQuoteJobFailed(

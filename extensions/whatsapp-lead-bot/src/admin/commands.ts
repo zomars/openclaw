@@ -17,6 +17,7 @@ import type { RateLimiter } from "../rate-limit/limiter.js";
 import type { Runtime } from "../runtime.js";
 import { computeScore } from "../scoring.js";
 import type { SessionResetter } from "../session-resetter.js";
+import { sendStoredQuoteUrl } from "../tools/send-quote-url.js";
 import { formatTimeAgo } from "../utils/format.js";
 import { normalizePhone } from "../utils/phone.js";
 
@@ -54,6 +55,7 @@ export type AdminCommand =
   | { type: "sync-leads" }
   | { type: "sync-labels" }
   | { type: "followup"; phone: string }
+  | { type: "send-quote-url"; phone: string; quoteNumber?: string }
   | { type: "pending" }
   | { type: "pause" }
   | { type: "resume" }
@@ -101,6 +103,10 @@ export class AdminCommandHandler {
     this.register("followup", (cmd, runtime) =>
       this.handleFollowup((cmd as { phone: string }).phone, runtime),
     );
+    this.register("send-quote-url", (cmd, runtime) => {
+      const c = cmd as { phone: string; quoteNumber?: string };
+      return this.handleSendQuoteUrl(c.phone, c.quoteNumber, runtime);
+    });
     this.register("pending", () => this.handlePending());
     this.register("pause", () => this.handlePause());
     this.register("resume", () => this.handleResume());
@@ -219,8 +225,8 @@ export class AdminCommandHandler {
       }
 
       case "recent": {
-        const count = parseInt(parts[1] || "5", 10);
-        return { type: "recent", count: isNaN(count) ? 5 : count };
+        const count = Number.parseInt(parts[1] || "5", 10);
+        return { type: "recent", count: Number.isNaN(count) ? 5 : count };
       }
 
       case "rate-status":
@@ -241,6 +247,14 @@ export class AdminCommandHandler {
           return null;
         }
         return { type: "followup", phone };
+      }
+
+      case "send-quote-url": {
+        const [phone, rest] = this.extractPhone(args);
+        if (!phone) {
+          return null;
+        }
+        return { type: "send-quote-url", phone, quoteNumber: rest[0] };
       }
 
       case "pending":
@@ -593,7 +607,9 @@ export class AdminCommandHandler {
         synced++;
 
         if ((i + 1) % BATCH_SIZE === 0 && i + 1 < allLeads.length) {
-          await new Promise((r) => setTimeout(r, BATCH_PAUSE_MS));
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, BATCH_PAUSE_MS);
+          });
         }
       } catch (err: unknown) {
         errors++;
@@ -646,6 +662,30 @@ export class AdminCommandHandler {
     await this.db.updateLastBotReply(lead.id, now);
 
     return `✅ Seguimiento enviado: ${lead.phone_number}`;
+  }
+
+  private async handleSendQuoteUrl(
+    phone: string,
+    quoteNumber: string | undefined,
+    runtime?: Runtime,
+  ): Promise<string> {
+    if (!runtime) {
+      return "❌ No se pudo enviar la URL: runtime de WhatsApp no disponible.";
+    }
+
+    const result = await sendStoredQuoteUrl(
+      {
+        phone,
+        quoteNumber,
+        actor: "admin",
+        source: "admin:send-quote-url",
+      },
+      { db: this.db, runtime },
+    );
+    if (!result.success) {
+      return `❌ ${result.error}`;
+    }
+    return `✅ URL de cotización enviada: ${result.quoteNumber}`;
   }
 
   private async handlePending(): Promise<string> {
@@ -711,7 +751,7 @@ export class AdminCommandHandler {
   }
 
   private handleHelp(): string {
-    return `**Admin Commands**\n\n/status <phone> - View lead status\n/block <phone> [reason] - Block lead\n/unblock <phone> - Unblock lead\n/handoff <phone> - Force handoff\n/takeback <phone> - Undo handoff, bot resumes\n/reset-lead <phone> - Reset lead state & qualification\n/clear-limit <phone> - Clear rate limit\n/score <phone> <HOT|WARM|COLD|OUT> - Set lead score & apply label\n/recent [N] - List N recent leads\n/sync-leads - Recalcular scores de todos los leads\n/sync-labels - Recalcular scores + sincronizar etiquetas WhatsApp\n/followup <phone> - Enviar seguimiento inmediato a un lead\n/pending - Ver leads sin respuesta del bot\n/pause - Pausar el bot (no responde a nadie)\n/resume - Reactivar el bot\n/rate-status - View rate limit & circuit breaker status\n/reset-breaker - Reset circuit breaker\n/help - Show this help`;
+    return `**Admin Commands**\n\n/status <phone> - View lead status\n/block <phone> [reason] - Block lead\n/unblock <phone> - Unblock lead\n/handoff <phone> - Force handoff\n/takeback <phone> - Undo handoff, bot resumes\n/reset-lead <phone> - Reset lead state & qualification\n/clear-limit <phone> - Clear rate limit\n/score <phone> <HOT|WARM|COLD|OUT> - Set lead score & apply label\n/recent [N] - List N recent leads\n/sync-leads - Recalcular scores de todos los leads\n/sync-labels - Recalcular scores + sincronizar etiquetas WhatsApp\n/followup <phone> - Enviar seguimiento inmediato a un lead\n/send-quote-url <phone> [quoteNumber] - Enviar URL web de cotización guardada\n/pending - Ver leads sin respuesta del bot\n/pause - Pausar el bot (no responde a nadie)\n/resume - Reactivar el bot\n/rate-status - View rate limit & circuit breaker status\n/reset-breaker - Reset circuit breaker\n/help - Show this help`;
   }
 
   // --- Shared helpers ---

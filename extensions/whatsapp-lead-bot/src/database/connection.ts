@@ -5,7 +5,7 @@
 import Database from "better-sqlite3";
 import type { LeadEventRecord, LeadEventRejectedWrite } from "../crm-memory/lead-events.js";
 import { eventMatchesLeadKey } from "../crm-memory/lead-events.js";
-import type { Database as DatabaseInterface } from "../database.js";
+import type { Database as DatabaseInterface, DeliveredQuoteAccess } from "../database.js";
 import { normalizePhone } from "../utils/phone.js";
 import type {
   Lead,
@@ -1255,6 +1255,45 @@ export class SqliteDatabase implements DatabaseInterface {
         await this.enqueueLeadSnapshotSync(lead.id);
       }
     }
+  }
+
+  async getLatestDeliveredQuoteAccess(input: {
+    customerPhones: string[];
+    quoteNumber?: string | null;
+    now?: number;
+  }): Promise<DeliveredQuoteAccess | null> {
+    const customerPhones = [...new Set(input.customerPhones.filter((phone) => phone.length > 0))];
+    if (customerPhones.length === 0) {
+      return null;
+    }
+
+    const now = input.now ?? Date.now();
+    const phonePlaceholders = customerPhones.map(() => "?").join(", ");
+    const quoteFilter = input.quoteNumber ? "AND quote_number = ?" : "";
+    const params: unknown[] = [...customerPhones];
+    if (input.quoteNumber) {
+      params.push(input.quoteNumber);
+    }
+    params.push(now);
+
+    const row = this.db
+      .prepare(
+        `SELECT request_id, customer_phone, quote_id, quote_number,
+                quote_access_token_id, quote_access_url, quote_access_expires_at,
+                completed_at
+         FROM pending_quote_jobs
+         WHERE customer_phone IN (${phonePlaceholders})
+           AND status = 'delivered'
+           AND quote_id IS NOT NULL
+           AND quote_number IS NOT NULL
+           AND quote_access_token_id IS NOT NULL
+           AND quote_access_url IS NOT NULL
+           AND ${quoteFilter ? "quote_number = ? AND" : ""} (quote_access_expires_at IS NULL OR quote_access_expires_at > ?)
+         ORDER BY completed_at DESC, updated_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(...params) as DeliveredQuoteAccess | undefined;
+    return row ?? null;
   }
 
   async markPendingQuoteJobFailed(

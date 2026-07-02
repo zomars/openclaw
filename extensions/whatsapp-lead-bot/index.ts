@@ -61,6 +61,7 @@ import { saveLeadTool } from "./src/tools/save-lead.js";
 import { saveReceiptDataTool } from "./src/tools/save-receipt-data.js";
 import { sendDisqualificationTool } from "./src/tools/send-disqualification.js";
 import { sendHandoffToAleTool } from "./src/tools/send-handoff-to-ale.js";
+import { sendQuoteUrlTool } from "./src/tools/send-quote-url.js";
 import { sendReceiptRequestTool } from "./src/tools/send-receipt-request.js";
 import { syncLabelsTool } from "./src/tools/sync-labels.js";
 import { whatsappHistoryFetchTool } from "./src/tools/whatsapp-history-fetch.js";
@@ -84,6 +85,7 @@ const DISCOVERY_TOOLS: Array<{ label: string; tool: LeadBotToolDefinition }> = [
   { label: "CRM Sync Backfill", tool: crmSyncBackfillTool },
   { label: "Send Disqualification", tool: sendDisqualificationTool },
   { label: "Send Receipt Request", tool: sendReceiptRequestTool },
+  { label: "Send Quote URL", tool: sendQuoteUrlTool },
   { label: "Send Handoff to Ale", tool: sendHandoffToAleTool },
   { label: "Save Receipt Data", tool: saveReceiptDataTool },
   { label: "Sync Labels", tool: syncLabelsTool },
@@ -678,6 +680,7 @@ const plugin = definePluginEntry({
       runtime,
     });
     registerPluginTool("Send Receipt Request", sendReceiptRequestTool, { db, runtime });
+    registerPluginTool("Send Quote URL", sendQuoteUrlTool, { db, runtime });
     registerPluginTool("Send Handoff to Ale", sendHandoffToAleTool, {
       db,
       runtime,

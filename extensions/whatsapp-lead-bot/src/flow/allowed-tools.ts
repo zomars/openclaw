@@ -37,7 +37,7 @@ const PER_STATE: Record<LeadState, ReadonlySet<string>> = {
     "message",
     "save_lead",
   ]),
-  QUOTED: new Set(["message", "send_handoff_to_ale", "save_lead", "edit_quote"]),
+  QUOTED: new Set(["message", "send_handoff_to_ale", "send_quote_url", "save_lead", "edit_quote"]),
   DISQUALIFIED: new Set([]),
   HANDED_OFF: new Set([]),
 };

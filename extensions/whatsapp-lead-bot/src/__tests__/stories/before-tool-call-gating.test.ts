@@ -60,6 +60,28 @@ describe("before_tool_call tool gating", () => {
     expect(result).toBeUndefined();
   });
 
+  it("allows send_quote_url only after the lead is quoted", async () => {
+    const { db } = createTestDb();
+    const lead = await db.upsertLead("526671000067", { name: "Quoted Lead" });
+    const blocked = await createBeforeToolCallHandler({ db })(
+      evt("send_quote_url", { phone: "526671000067" }),
+      {
+        sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000067",
+      },
+    );
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.blockReason).toContain("send_quote_url");
+
+    await db.updateQuoteData(lead.id, { panels_quoted: 8, quoted_at: Date.now() });
+
+    const handler = createBeforeToolCallHandler({ db });
+    const result = await handler(evt("send_quote_url", { phone: "526671000067" }), {
+      sessionKey: "agent:solayre-leads:whatsapp:default:direct:526671000067",
+    });
+
+    expect(result).toBeUndefined();
+  });
+
   it("blocks all message tool calls for HANDED_OFF leads", async () => {
     const { db } = createTestDb();
     await db.upsertLead("526671000063", { name: "Pedro" });
