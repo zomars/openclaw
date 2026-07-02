@@ -115,6 +115,10 @@ export interface PendingQuoteJobStore {
     invokingAgentId?: string | null;
     nextPollAt?: number;
   }): Promise<number>;
+  findPendingQuoteJobByCustomerMedia(input: {
+    customerPhone: string;
+    mediaPath: string;
+  }): Promise<PendingQuoteJob | null>;
   getDuePendingQuoteJobs(now: number, limit: number): Promise<PendingQuoteJob[]>;
   getPendingQuoteJobByRequestId(requestId: string): Promise<PendingQuoteJob | null>;
   markPendingQuoteJobWebhookResumed(id: number, resumedAt?: number): Promise<boolean>;
@@ -156,6 +160,17 @@ export interface QuoteWebhookEventStore {
     payload: unknown;
     receivedAt?: number;
   }): Promise<{ row: QuoteWebhookEventRow; duplicate: boolean }>;
+  getDueQuoteWebhookEvents(now: number, limit: number): Promise<QuoteWebhookEventRow[]>;
+  markQuoteWebhookEventDispatching(id: number, startedAt?: number): Promise<boolean>;
+  markQuoteWebhookEventProcessed(id: number, processedAt?: number): Promise<void>;
+  rescheduleQuoteWebhookEvent(
+    id: number,
+    input: { attempts: number; nextAttemptAt: number; lastError?: string | null },
+  ): Promise<void>;
+  deadLetterQuoteWebhookEvent(
+    id: number,
+    input: { error: string; processedAt?: number },
+  ): Promise<void>;
 }
 
 export interface CrmSyncStore {

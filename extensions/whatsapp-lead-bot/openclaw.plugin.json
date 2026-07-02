@@ -142,11 +142,30 @@
             "minLength": 1,
             "description": "Exact plugin HTTP route that receives signed quote completion events."
           },
+          "publicCallbackUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Publicly-accessible URL that Solayre sends callbacks to. Must be reachable from Supabase."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Expected event source identifier. Events with a different source are rejected."
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["polling", "webhook-primary", "webhook-only"],
+            "description": "Delivery mode: polling (fallback only), webhook-primary (webhook with polling fallback), webhook-only (no polling)."
+          },
           "signingSecret": {
             "$ref": "#/$defs/secretInput",
             "description": "HMAC signing secret or SecretRef used to verify inbound quote events."
           },
           "replayWindowMs": { "type": "number" },
+          "pollFallbackDelayMs": {
+            "type": "number",
+            "description": "Delay before polling fallback when webhook-primary mode is active."
+          },
           "maxBodyBytes": { "type": "number" },
           "rateLimit": {
             "type": "object",

@@ -394,6 +394,15 @@ export function createQuoteEventWebhookHandler(params: QuoteEventWebhookHandlerP
         return true;
       }
 
+      // Validate source against configured expected source
+      if (webhookConfig.source && envelope.source !== webhookConfig.source) {
+        params.log?.warn?.(
+          `Quote event webhook rejected: source "${envelope.source}" does not match configured source "${webhookConfig.source}"`,
+        );
+        respondJson(res, 403, { ok: false, error: "invalid event source" });
+        return true;
+      }
+
       const recorded = await params.store.recordQuoteWebhookEvent({
         source: envelope.source,
         eventId: envelope.event_id,

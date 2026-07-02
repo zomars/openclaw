@@ -166,8 +166,12 @@ const zodSchema = z.object({
     .object({
       enabled: z.boolean().default(false),
       path: z.string().min(1).default("/plugins/whatsapp-lead-bot/quote-events"),
+      publicCallbackUrl: z.string().url().optional(),
+      source: z.string().min(1).default("solayre.parse-and-quote"),
+      mode: z.enum(["polling", "webhook-primary", "webhook-only"]).default("polling"),
       signingSecret: SecretInputSchema.optional(),
       replayWindowMs: z.number().int().positive().default(300_000),
+      pollFallbackDelayMs: z.number().int().positive().default(30_000),
       maxBodyBytes: z
         .number()
         .int()
@@ -186,7 +190,10 @@ const zodSchema = z.object({
     .default({
       enabled: false,
       path: "/plugins/whatsapp-lead-bot/quote-events",
+      source: "solayre.parse-and-quote",
+      mode: "polling",
       replayWindowMs: 300_000,
+      pollFallbackDelayMs: 30_000,
       maxBodyBytes: 64 * 1024,
       rateLimit: {
         maxRequests: 120,

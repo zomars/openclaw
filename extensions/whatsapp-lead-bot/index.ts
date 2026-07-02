@@ -24,6 +24,7 @@ import { createLovableCrmClient } from "./src/crm-sync/lovable-client.js";
 import { CrmSyncWorker } from "./src/crm-sync/worker.js";
 import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
+import { formatDmHistoryBody } from "./src/history/dm-history.js";
 import { createAttributionOverrideHandler } from "./src/hooks/attribution-override.js";
 import { createBeforePromptBuildHandler } from "./src/hooks/before-prompt-build.js";
 import { createBeforeToolCallHandler } from "./src/hooks/before-tool-call.js";
@@ -587,6 +588,8 @@ const plugin = definePluginEntry({
           const result = await processLeadCFEReceiptTool.execute(params as never, {
             submitReceipt: (input) => parseAndQuoteClient.submitReceipt(input),
             createPendingQuoteJob: (input) => db.createPendingQuoteJob(input),
+            findPendingQuoteJobByCustomerMedia: (input) =>
+              db.findPendingQuoteJobByCustomerMedia(input),
             agentSessionKey: toolCtx.sessionKey ?? null,
             agentSessionId: toolCtx.sessionId ?? null,
             invokingAgentId: toolCtx.agentId ?? null,
@@ -601,9 +604,19 @@ const plugin = definePluginEntry({
       console.log(`[whatsapp-lead-bot] Registered tool: ${processLeadCFEReceiptTool.name}`);
 
       if (config.eventWebhook.enabled) {
+        const missingFields: string[] = [];
         if (!config.eventWebhook.signingSecret) {
+          missingFields.push("signingSecret");
+        }
+        if (!config.eventWebhook.publicCallbackUrl) {
+          missingFields.push("publicCallbackUrl");
+        }
+        if (!config.eventWebhook.source) {
+          missingFields.push("source");
+        }
+        if (missingFields.length > 0) {
           console.warn(
-            "[whatsapp-lead-bot] eventWebhook enabled without signingSecret; route not registered",
+            `[whatsapp-lead-bot] eventWebhook enabled but missing required fields: ${missingFields.join(", ")}; route not registered`,
           );
         } else {
           api.registerHttpRoute({
@@ -800,31 +813,9 @@ const plugin = definePluginEntry({
       }
       return rows.map((r) => {
         const senderLabel = r.from_me === 1 ? "me" : (r.sender_jid ?? r.chat_jid);
-        const mediaParts: string[] = [];
-        if (r.media_type) {
-          mediaParts.push(r.media_type);
-        }
-        if (r.media_filename) {
-          mediaParts.push(r.media_filename);
-        }
-        if (r.media_size) {
-          mediaParts.push(`${r.media_size} bytes`);
-        }
-        if (r.media_path) {
-          mediaParts.push(`path: ${r.media_path}`);
-        }
-        const mediaSuffix = mediaParts.length > 0 ? ` [${mediaParts.join(", ")}]` : "";
-        let body = (r.content ?? "") + mediaSuffix;
-        if (r.reaction_emoji) {
-          body = `[reaction ${r.reaction_emoji} on ${r.reaction_target_id ?? "?"}]`;
-        } else if (r.revoked_target_id) {
-          body = `[deleted message ${r.revoked_target_id}]`;
-        } else if (r.edited_from_id) {
-          body = `[edited ${r.edited_from_id}] ${body}`;
-        }
         return {
           sender: senderLabel,
-          body,
+          body: formatDmHistoryBody(r),
           timestamp: r.timestamp * 1000,
           id: r.id,
         };

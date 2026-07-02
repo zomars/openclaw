@@ -49,6 +49,7 @@ import {
   MIGRATE_V16_TO_V17_DDL,
   MIGRATE_V17_TO_V18_DDL,
   MIGRATE_V18_TO_V19_DDL,
+  MIGRATE_V19_TO_V20_DDL,
   SCHEMA_VERSION,
 } from "./schema.js";
 
@@ -256,6 +257,21 @@ export class SqliteDatabase implements DatabaseInterface {
       if (versionRow.version < 19) {
         // v18→v19: remember the originating agent session for webhook resumptions.
         for (const stmt of MIGRATE_V18_TO_V19_DDL.split(";")) {
+          const trimmed = stmt.trim();
+          if (trimmed) {
+            try {
+              this.db.exec(trimmed);
+            } catch (err: unknown) {
+              if (!(err instanceof Error && err.message.includes("duplicate column"))) {
+                throw err;
+              }
+            }
+          }
+        }
+      }
+      if (versionRow.version < 20) {
+        // v19→v20: durable webhook dispatch retry state.
+        for (const stmt of MIGRATE_V19_TO_V20_DDL.split(";")) {
           const trimmed = stmt.trim();
           if (trimmed) {
             try {
@@ -1137,6 +1153,23 @@ export class SqliteDatabase implements DatabaseInterface {
     return row.id;
   }
 
+  async findPendingQuoteJobByCustomerMedia(input: {
+    customerPhone: string;
+    mediaPath: string;
+  }): Promise<PendingQuoteJob | null> {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM pending_quote_jobs
+         WHERE customer_phone = ?
+           AND media_path = ?
+           AND status = 'pending'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(input.customerPhone, input.mediaPath) as PendingQuoteJob | undefined;
+    return row ?? null;
+  }
+
   async getDuePendingQuoteJobs(now: number, limit: number): Promise<PendingQuoteJob[]> {
     return this.db
       .prepare(
@@ -1275,8 +1308,8 @@ export class SqliteDatabase implements DatabaseInterface {
       .prepare(
         `INSERT INTO quote_webhook_events (
           source, event_id, event_type, request_id, subject, payload_json,
-          status, duplicate_count, first_received_at, last_received_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', 0, ?, ?)
+          status, duplicate_count, attempts, next_attempt_at, first_received_at, last_received_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', 0, 0, ?, ?, ?)
         ON CONFLICT(source, event_id) DO UPDATE SET
           duplicate_count = quote_webhook_events.duplicate_count + 1,
           last_received_at = excluded.last_received_at
@@ -1291,11 +1324,82 @@ export class SqliteDatabase implements DatabaseInterface {
         JSON.stringify(input.payload ?? null),
         now,
         now,
+        now,
       ) as QuoteWebhookEventRow | undefined;
     if (!row) {
       throw new Error("failed to record quote webhook event");
     }
     return { row, duplicate: row.duplicate_count > 0 };
+  }
+
+  async getDueQuoteWebhookEvents(now: number, limit: number): Promise<QuoteWebhookEventRow[]> {
+    return this.db
+      .prepare(
+        `SELECT * FROM quote_webhook_events
+         WHERE status IN ('accepted', 'retry')
+           AND next_attempt_at <= ?
+         ORDER BY next_attempt_at ASC, id ASC
+         LIMIT ?`,
+      )
+      .all(now, limit) as QuoteWebhookEventRow[];
+  }
+
+  async markQuoteWebhookEventDispatching(id: number, startedAt = Date.now()): Promise<boolean> {
+    const result = this.db
+      .prepare(
+        `UPDATE quote_webhook_events
+         SET status = 'processing',
+             attempts = attempts + 1,
+             last_error = NULL,
+             next_attempt_at = ?
+         WHERE id = ?
+           AND status IN ('accepted', 'retry')`,
+      )
+      .run(startedAt, id);
+    return result.changes > 0;
+  }
+
+  async markQuoteWebhookEventProcessed(id: number, processedAt = Date.now()): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE quote_webhook_events
+         SET status = 'processed',
+             processed_at = ?,
+             last_error = NULL
+         WHERE id = ?`,
+      )
+      .run(processedAt, id);
+  }
+
+  async rescheduleQuoteWebhookEvent(
+    id: number,
+    input: { attempts: number; nextAttemptAt: number; lastError?: string | null },
+  ): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE quote_webhook_events
+         SET status = 'retry',
+             attempts = ?,
+             next_attempt_at = ?,
+             last_error = ?
+         WHERE id = ?`,
+      )
+      .run(input.attempts, input.nextAttemptAt, input.lastError ?? null, id);
+  }
+
+  async deadLetterQuoteWebhookEvent(
+    id: number,
+    input: { error: string; processedAt?: number },
+  ): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE quote_webhook_events
+         SET status = 'dead_lettered',
+             processed_at = ?,
+             last_error = ?
+         WHERE id = ?`,
+      )
+      .run(input.processedAt ?? Date.now(), input.error, id);
   }
 
   // --- CRM sync outbox ---

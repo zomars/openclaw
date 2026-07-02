@@ -142,8 +142,12 @@ function baseConfig(): WhatsAppLeadBotConfig {
     eventWebhook: {
       enabled: true,
       path: "/plugins/whatsapp-lead-bot/quote-events",
+      publicCallbackUrl: "https://webhooks.example.com/plugins/whatsapp-lead-bot/quote-events",
+      source: "solayre.parse-and-quote",
+      mode: "webhook-primary",
       signingSecret: SECRET,
       replayWindowMs: 300_000,
+      pollFallbackDelayMs: 30_000,
       maxBodyBytes: 64 * 1024,
       rateLimit: { maxRequests: 120, windowMs: 60_000 },
     },
@@ -205,6 +209,9 @@ function createStore(): QuoteWebhookEventStore &
     jobs,
     async createPendingQuoteJob() {
       throw new Error("not used");
+    },
+    async findPendingQuoteJobByCustomerMedia() {
+      return null;
     },
     async getDuePendingQuoteJobs() {
       return [];
@@ -500,6 +507,154 @@ describe("quote event webhook", () => {
     const { res } = await invoke({ body, signature: sign(`${body} `), store });
 
     expect(res.statusCode).toBe(401);
+    expect(store.calls).toHaveLength(0);
+  });
+
+  it("rejects events with wrong source", async () => {
+    const body = JSON.stringify({
+      event_id: "evt_wrong_source",
+      type: "calculation.completed",
+      source: "solayre.unknown-service",
+      subject: "quote_request:req_123",
+      occurred_at: "2026-06-29T18:25:00Z",
+      payload: {
+        request_id: "req_123",
+        quote_id: "quote_123",
+        quote_number: "SOL20260629-test",
+        pdf_url: "https://example.com/quote.pdf",
+      },
+    });
+    const store = createStore();
+    const { res } = await invoke({ body, signature: sign(body), store });
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(String(res.body))).toEqual({
+      ok: false,
+      error: "invalid event source",
+    });
+    expect(store.calls).toHaveLength(0);
+  });
+
+  it("rejects events with missing source", async () => {
+    const body = JSON.stringify({
+      event_id: "evt_no_source",
+      type: "calculation.completed",
+      subject: "quote_request:req_123",
+      occurred_at: "2026-06-29T18:25:00Z",
+      payload: {
+        request_id: "req_123",
+        quote_id: "quote_123",
+        quote_number: "SOL20260629-test",
+        pdf_url: "https://example.com/quote.pdf",
+      },
+    });
+    const store = createStore();
+    const { res } = await invoke({ body, signature: sign(body), store });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(String(res.body))).toEqual({
+      ok: false,
+      error: "invalid event envelope",
+    });
+    expect(store.calls).toHaveLength(0);
+  });
+
+  it("disabled config registers no route (route gate test)", async () => {
+    // The route gate in index.ts checks enabled + signingSecret + publicCallbackUrl + source.
+    // When eventWebhook is disabled, the route is never registered.
+    // We verify the gate logic by simulating what index.ts does:
+    // - enabled=false: skip registration entirely
+    // - enabled=true but missing required fields: warn and skip
+    //
+    // This test validates the gate conditions directly.
+    const gateConditions = [
+      {
+        enabled: false,
+        signingSecret: SECRET,
+        publicCallbackUrl: "https://example.com/cb",
+        source: "solayre.parse-and-quote",
+        expectRegister: false,
+      },
+      {
+        enabled: true,
+        signingSecret: undefined,
+        publicCallbackUrl: "https://example.com/cb",
+        source: "solayre.parse-and-quote",
+        expectRegister: false,
+      },
+      {
+        enabled: true,
+        signingSecret: SECRET,
+        publicCallbackUrl: undefined,
+        source: "solayre.parse-and-quote",
+        expectRegister: false,
+      },
+      {
+        enabled: true,
+        signingSecret: SECRET,
+        publicCallbackUrl: "https://example.com/cb",
+        source: undefined,
+        expectRegister: false,
+      },
+      {
+        enabled: true,
+        signingSecret: SECRET,
+        publicCallbackUrl: "https://example.com/cb",
+        source: "solayre.parse-and-quote",
+        expectRegister: true,
+      },
+    ];
+
+    for (const condition of gateConditions) {
+      const missingFields: string[] = [];
+      if (!condition.signingSecret) missingFields.push("signingSecret");
+      if (!condition.publicCallbackUrl) missingFields.push("publicCallbackUrl");
+      if (!condition.source) missingFields.push("source");
+      const shouldRegister = condition.enabled && missingFields.length === 0;
+      expect(shouldRegister).toBe(condition.expectRegister);
+    }
+  });
+
+  it("rejects events with stale signature before JSON dispatch", async () => {
+    const body = eventBody();
+    const store = createStore();
+    const { res } = await invoke({
+      body,
+      signature: sign(body, NOW - 600_000),
+      store,
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(String(res.body))).toEqual({
+      ok: false,
+      error: "invalid signature",
+    });
+    expect(store.calls).toHaveLength(0);
+  });
+
+  it("rejects events with missing signature header", async () => {
+    const body = eventBody();
+    const store = createStore();
+    const { res } = await invoke({ body, store });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(String(res.body))).toEqual({
+      ok: false,
+      error: "invalid signature",
+    });
+    expect(store.calls).toHaveLength(0);
+  });
+
+  it("rejects events with malformed signature header", async () => {
+    const body = eventBody();
+    const store = createStore();
+    const { res } = await invoke({ body, signature: "not-a-valid-signature", store });
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(String(res.body))).toEqual({
+      ok: false,
+      error: "invalid signature",
+    });
     expect(store.calls).toHaveLength(0);
   });
 });

@@ -48,6 +48,10 @@ class MemoryPendingQuoteStore implements PendingQuoteJobStore {
     throw new Error("not used");
   }
 
+  async findPendingQuoteJobByCustomerMedia(): Promise<PendingQuoteJob | null> {
+    return null;
+  }
+
   async getDuePendingQuoteJobs(now: number, limit: number): Promise<PendingQuoteJob[]> {
     return this.jobs
       .filter(

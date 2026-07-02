@@ -218,6 +218,13 @@ export interface LeadMemoryRejectedWriteRow {
   created_at: number;
 }
 
+export type QuoteWebhookEventStatus =
+  | "accepted"
+  | "processing"
+  | "processed"
+  | "retry"
+  | "dead_lettered";
+
 export interface QuoteWebhookEventRow {
   id: number;
   source: string;
@@ -226,8 +233,10 @@ export interface QuoteWebhookEventRow {
   request_id: string | null;
   subject: string | null;
   payload_json: string;
-  status: string;
+  status: QuoteWebhookEventStatus;
   duplicate_count: number;
+  attempts: number;
+  next_attempt_at: number;
   first_received_at: number;
   last_received_at: number;
   processed_at: number | null;
@@ -303,6 +312,8 @@ CREATE TABLE IF NOT EXISTS quote_webhook_events (
   payload_json TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'accepted',
   duplicate_count INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
   first_received_at INTEGER NOT NULL,
   last_received_at INTEGER NOT NULL,
   processed_at INTEGER,
@@ -311,7 +322,7 @@ CREATE TABLE IF NOT EXISTS quote_webhook_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_quote_webhook_events_status
-  ON quote_webhook_events(status, first_received_at, id);
+  ON quote_webhook_events(status, next_attempt_at, id);
 CREATE INDEX IF NOT EXISTS idx_quote_webhook_events_request
   ON quote_webhook_events(request_id, first_received_at);
 `;
@@ -446,7 +457,18 @@ ALTER TABLE pending_quote_jobs ADD COLUMN invoking_agent_id TEXT;
 ALTER TABLE pending_quote_jobs ADD COLUMN webhook_resumed_at INTEGER;
 `;
 
-export const SCHEMA_VERSION = 19;
+export const MIGRATE_V19_TO_V20_DDL = `
+ALTER TABLE quote_webhook_events ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE quote_webhook_events ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;
+UPDATE quote_webhook_events
+  SET next_attempt_at = first_received_at
+  WHERE next_attempt_at = 0;
+DROP INDEX IF EXISTS idx_quote_webhook_events_status;
+CREATE INDEX IF NOT EXISTS idx_quote_webhook_events_status
+  ON quote_webhook_events(status, next_attempt_at, id);
+`;
+
+export const SCHEMA_VERSION = 20;
 
 export const CREATE_TABLES_SQL = `
 -- Schema version tracking
