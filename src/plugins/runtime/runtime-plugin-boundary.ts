@@ -2,11 +2,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getRuntimeConfig } from "../../config/config.js";
+import { resolveOpenClawPackageRootSync } from "../../infra/openclaw-root.js";
 import { loadPluginManifestRegistry } from "../manifest-registry.js";
 import {
   isJavaScriptModulePath,
   tryNativeRequireJavaScriptModule,
 } from "../native-module-require.js";
+import { isPathInside, safeRealpathSync } from "../path-safety.js";
 import {
   getCachedPluginSourceModuleLoader,
   type PluginModuleLoaderCache,
@@ -122,6 +124,21 @@ function getPluginBoundarySourceLoader(modulePath: string, loaders: PluginModule
   });
 }
 
+function isBundledSourceCheckoutRuntimeModule(modulePath: string): boolean {
+  if (isJavaScriptModulePath(modulePath)) {
+    return false;
+  }
+  const packageRoot = resolveOpenClawPackageRootSync({
+    cwd: path.dirname(modulePath),
+  });
+  if (!packageRoot || !fs.existsSync(path.join(packageRoot, "src"))) {
+    return false;
+  }
+  const extensionsRoot = safeRealpathSync(path.join(packageRoot, "extensions"));
+  const moduleRealPath = safeRealpathSync(modulePath);
+  return Boolean(extensionsRoot && moduleRealPath && isPathInside(extensionsRoot, moduleRealPath));
+}
+
 // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Dynamic plugin boundary loaders use caller-supplied module types.
 export function loadPluginBoundaryModule<TModule>(
   modulePath: string,
@@ -139,7 +156,7 @@ export function loadPluginBoundaryModule<TModule>(
     if (options.origin === "bundled") {
       throw new Error(`bundled plugin runtime module must load natively: ${modulePath}`);
     }
-  } else if (options.origin === "bundled") {
+  } else if (options.origin === "bundled" && !isBundledSourceCheckoutRuntimeModule(modulePath)) {
     throw new Error(`bundled plugin runtime module must be built JavaScript: ${modulePath}`);
   }
 

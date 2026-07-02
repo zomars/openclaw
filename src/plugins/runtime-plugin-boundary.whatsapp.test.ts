@@ -174,6 +174,28 @@ describe("runtime plugin boundary whatsapp seam", () => {
     expect(loaders.size).toBe(0);
   });
 
+  it("loads bundled TypeScript runtime modules from an OpenClaw source checkout", () => {
+    const rootDir = makeTrackedTempDir("openclaw-source-boundary-ts", tempDirs);
+    writeRuntimeFixtureText(
+      rootDir,
+      "package.json",
+      JSON.stringify({ name: "openclaw", type: "module" }, null, 2),
+    );
+    writeRuntimeFixtureText(rootDir, "src/index.ts", "export {};\n");
+    writeRuntimeFixtureText(
+      rootDir,
+      "extensions/whatsapp/runtime-api.ts",
+      "export const ok = true;\n",
+    );
+    const modulePath = path.join(rootDir, "extensions", "whatsapp", "runtime-api.ts");
+    const loaders: PluginModuleLoaderCache = new Map();
+
+    expect(
+      loadPluginBoundaryModule<{ ok: boolean }>(modulePath, loaders, { origin: "bundled" }),
+    ).toEqual({ ok: true });
+    expect(loaders.size).toBe(1);
+  });
+
   it("keeps the TypeScript source package fallback available for non-bundled plugins", () => {
     const modulePath = createExternalTypeScriptRuntimePackageFixture();
     const loaders: PluginModuleLoaderCache = new Map();
