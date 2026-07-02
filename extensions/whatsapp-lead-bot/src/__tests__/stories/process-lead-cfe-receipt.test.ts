@@ -143,6 +143,45 @@ describe("process_lead_cfe_receipt tool", () => {
     });
   });
 
+  it("does not send duplicate ack or resubmit when the same receipt already has a pending job", async () => {
+    const { deps, runtime, state } = buildQueueDeps({
+      findPendingQuoteJobByCustomerMedia: async () => ({
+        id: 99,
+        request_id: "req_existing",
+        customer_phone: CUSTOMER_PHONE,
+        media_path: MEDIA_PATH,
+        status: "pending",
+        attempts: 0,
+        next_poll_at: Date.now(),
+        webhook_resumed_at: null,
+        last_error: null,
+        quote_id: null,
+        quote_number: null,
+        quote_access_token_id: null,
+        quote_access_url: null,
+        quote_access_expires_at: null,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+        completed_at: null,
+      }),
+    });
+
+    const result = await processLeadCFEReceiptTool.execute(
+      { mediaPath: MEDIA_PATH, customerPhone: CUSTOMER_PHONE },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      mode: "queued",
+      requestId: "req_existing",
+      jobId: 99,
+    });
+    expect(runtime.sentMessages).toHaveLength(0);
+    expect(state.submitCalls).toHaveLength(0);
+    expect(state.pendingJobs).toHaveLength(0);
+  });
+
   it("persists the originating agent session for webhook resume", async () => {
     const { deps, state } = buildQueueDeps({
       agentSessionKey: "agent:main:whatsapp:526121347942",

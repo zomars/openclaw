@@ -10,6 +10,7 @@ import type {
   ParseAndQuoteResult,
   SubmitQuoteReceiptResult,
 } from "../cfe/parse-and-quote-client.js";
+import type { PendingQuoteJob } from "../database/schema.js";
 import type { Runtime } from "../runtime.js";
 
 export interface ProcessLeadCFEReceiptParams {
@@ -28,6 +29,10 @@ export interface ProcessLeadCFEReceiptDeps {
     invokingAgentId?: string | null;
     nextPollAt?: number;
   }) => Promise<number>;
+  findPendingQuoteJobByCustomerMedia?: (input: {
+    customerPhone: string;
+    mediaPath: string;
+  }) => Promise<PendingQuoteJob | null>;
   agentSessionKey?: string | null;
   agentSessionId?: string | null;
   invokingAgentId?: string | null;
@@ -104,6 +109,21 @@ export const processLeadCFEReceiptTool = {
 
     if (!mediaPath || !customerPhone) {
       return { success: false, error: "mediaPath and customerPhone are required" };
+    }
+
+    if (deps.findPendingQuoteJobByCustomerMedia) {
+      const existingJob = await deps.findPendingQuoteJobByCustomerMedia({
+        customerPhone,
+        mediaPath,
+      });
+      if (existingJob) {
+        return {
+          success: true,
+          mode: "queued",
+          requestId: existingJob.request_id,
+          jobId: existingJob.id,
+        };
+      }
     }
 
     try {

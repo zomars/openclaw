@@ -2,7 +2,7 @@
   "id": "solayre-quotes-coworker",
   "name": "Solayre Quotes (Coworker)",
   "version": "0.1.0",
-  "description": "CFE-receipt → solar-quote tools for the solayre-coworker agent. Stateless: parses a CFE PDF via the Supabase parse-and-quote endpoint and delivers the quote to whatever client phone the coworker supplies.",
+  "description": "CFE-receipt → solar-quote tools for the solayre-coworker agent. Stateless: parses a CFE PDF via the Supabase parse-and-quote endpoint and returns the quote to the coworker by default.",
   "author": "OpenClaw",
   "license": "MIT",
   "contracts": {
