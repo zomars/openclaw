@@ -42,6 +42,7 @@ import {
   readLatestAssistantReplySnapshot,
   waitForAgentRunAndReadUpdatedAssistantReply,
 } from "../run-wait.js";
+import { optionalStringEnum } from "../schema/string-enum.js";
 import { loadSessionEntryByKey } from "../subagent-announce-delivery.js";
 import {
   describeSessionsSendTool,
@@ -65,6 +66,10 @@ const SessionsSendToolSchema = Type.Object({
   label: Type.Optional(Type.String({ minLength: 1, maxLength: SESSION_LABEL_MAX_LENGTH })),
   agentId: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
   message: Type.String(),
+  replyMode: optionalStringEnum(["default", "none"] as const, {
+    description:
+      'Controls post-run agent-to-agent reply handling. Use "none" for one-way handoffs where the target should not ping-pong or announce back.',
+  }),
   timeoutSeconds: Type.Optional(Type.Integer({ minimum: 0 })),
 });
 
@@ -358,6 +363,14 @@ export function createSessionsSendTool(opts?: {
       const params = normalizeSessionsSendArguments(args);
       const gatewayCall = opts?.callGateway ?? callGateway;
       const message = readStringParam(params, "message", { required: true });
+      let replyMode = readStringParam(params, "replyMode");
+      if (replyMode && replyMode !== "default" && replyMode !== "none") {
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: "error",
+          error: 'replyMode must be "default" or "none"',
+        });
+      }
       const timeoutSeconds = readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30;
       const { cfg, mainKey, alias, effectiveRequesterKey, restrictToSpawned } =
         resolveSessionToolContext(opts);
@@ -505,6 +518,17 @@ export function createSessionsSendTool(opts?: {
       // Normalize sessionKey/sessionId input into a canonical session key.
       const resolvedKey = visibleSession.key;
       const displayKey = visibleSession.displayKey;
+
+      // Deterministic echo guard: solayre-coworker dispatcher calls to
+      // solayre-leads always use replyMode "none" so the runtime skips the
+      // A2A ping-pong/announce flow regardless of what the model passes.
+      const requesterAgentId = opts?.agentSessionKey
+        ? resolveAgentIdFromSessionKey(opts.agentSessionKey)
+        : undefined;
+      const targetAgentId = resolveAgentIdFromSessionKey(resolvedKey);
+      if (requesterAgentId === "solayre-coworker" && targetAgentId === "solayre-leads") {
+        replyMode = "none";
+      }
       const timeoutMs =
         finiteSecondsToTimerSafeMilliseconds(timeoutSeconds, {
           floorSeconds: true,
@@ -635,13 +659,14 @@ export function createSessionsSendTool(opts?: {
           requesterSessionKey: effectiveRequesterKey,
           targetSessionKey: resolvedKey,
         });
-      const skipA2AFlow = skipAcpA2AFlow || skipNativeParentA2AFlow;
+      const skipReplyModeA2AFlow = replyMode === "none";
+      const skipA2AFlow = skipAcpA2AFlow || skipNativeParentA2AFlow || skipReplyModeA2AFlow;
       // When the A2A flow is skipped, no follow-up announcement will fire and
       // the reply (when present) is returned inline via the `reply` field.
       // Reflect that in the metadata so the parent LLM does not wait for a
       // second result that will never arrive.
       const delivery = skipA2AFlow
-        ? ({ status: "skipped", mode: "announce" } as const)
+        ? ({ status: "skipped", mode: skipReplyModeA2AFlow ? "none" : "announce" } as const)
         : ({ status: "pending", mode: "announce" } as const);
 
       const startA2AFlow = (

@@ -1180,6 +1180,85 @@ describe("sessions tools", () => {
     expect(sendCallCount).toBe(0);
   });
 
+  it("sessions_send replyMode none suppresses agent-to-agent ping-pong and announce", async () => {
+    const calls: Array<{ method?: string; params?: unknown }> = [];
+    let lastWaitedRunId: string | undefined;
+    const replyByRunId = new Map<string, string>();
+    const requesterKey = "agent:dispatcher:main";
+    const targetKey = "agent:leads:whatsapp:solayre:direct:+5216673156121";
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; params?: unknown };
+      calls.push(request);
+      if (request.method === "agent") {
+        const params = request.params as { extraSystemPrompt?: string } | undefined;
+        const runId = `run-${calls.filter((call) => call.method === "agent").length}`;
+        const reply = params?.extraSystemPrompt?.includes("Agent-to-agent message context")
+          ? "Target handled the handoff"
+          : "unexpected a2a follow-up";
+        replyByRunId.set(runId, reply);
+        return { runId, status: "accepted", acceptedAt: 1234 };
+      }
+      if (request.method === "agent.wait") {
+        const params = request.params as { runId?: string } | undefined;
+        lastWaitedRunId = params?.runId;
+        return { runId: params?.runId ?? "run-1", status: "ok" };
+      }
+      if (request.method === "chat.history") {
+        const text = (lastWaitedRunId && replyByRunId.get(lastWaitedRunId)) ?? "";
+        return {
+          messages: text
+            ? [
+                {
+                  role: "assistant",
+                  content: [{ type: "text", text }],
+                  timestamp: 20,
+                },
+              ]
+            : [],
+        };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: requesterKey,
+      agentChannel: "webchat",
+    }).find((candidate) => candidate.name === "sessions_send");
+    if (!tool) {
+      throw new Error("missing sessions_send tool");
+    }
+
+    const result = await tool.execute("call-reply-none", {
+      sessionKey: targetKey,
+      message: "one-way handoff",
+      replyMode: "none",
+      timeoutSeconds: 1,
+    });
+
+    const details = sessionsSendDetails(result.details);
+    expect(details.status).toBe("ok");
+    expect(details.reply).toBe("Target handled the handoff");
+    expect(details.delivery).toEqual({ status: "skipped", mode: "none" });
+
+    const agentCalls = calls.filter((call) => call.method === "agent");
+    expect(agentCalls).toHaveLength(1);
+    expect(agentParams(agentCalls[0] ?? {}).extraSystemPrompt).toContain(
+      "Agent-to-agent message context",
+    );
+    expect(
+      agentCalls.some((call) =>
+        agentParams(call).extraSystemPrompt?.includes("Agent-to-agent reply step"),
+      ),
+    ).toBe(false);
+    expect(
+      agentCalls.some((call) =>
+        agentParams(call).extraSystemPrompt?.includes("Agent-to-agent announce step"),
+      ),
+    ).toBe(false);
+    expect(calls.some((call) => call.method === "send")).toBe(false);
+  });
+
   it("sessions_send returns pending agent error diagnostics on timeout", async () => {
     const calls: Array<{ method?: string; params?: unknown }> = [];
     callGatewayMock.mockImplementation(async (opts: unknown) => {
