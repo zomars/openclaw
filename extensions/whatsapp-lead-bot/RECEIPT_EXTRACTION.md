@@ -149,7 +149,7 @@ Send file >5MB.
 **Expected:**
 
 ```
-Bot: "Thanks for the document! A team member will review it shortly."
+Bot: "Gracias por enviar el documento. El equipo lo revisará en breve."
 ```
 
 No extraction record created.
@@ -177,7 +177,7 @@ Send video or audio file.
 **Expected:**
 
 ```
-Bot: "Thanks for the video! A team member will review it shortly."
+Bot: "Gracias por enviar el video. El equipo lo revisará en breve."
 ```
 
 No extraction attempted.

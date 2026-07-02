@@ -189,7 +189,7 @@ export function createMessageReceivedHandler(deps: MessageReceivedHandlerDeps) {
 
     await deps.db.updateLeadStatus(lead.id, "ignored");
     await runtime.sendMessage(event.from, {
-      text: "Understood. You won't receive any more messages from us. Thanks for your time!",
+      text: "Entendido. Ya no recibirá más mensajes de nuestra parte. Gracias por su tiempo.",
       metadata: { openclawInitiated: true },
     });
     return { suppress: true };

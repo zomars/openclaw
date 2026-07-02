@@ -31,16 +31,19 @@ export class MediaHandler {
     }
 
     const typeMap: Record<string, string> = {
-      image: "photo",
-      video: "video",
-      audio: "audio message",
-      document: "document",
+      image: "la foto",
+      video: "el video",
+      audio: "el audio",
+      document: "el documento",
     };
-    const mediaTypeSimple = Object.keys(typeMap).find((key) => mediaType.includes(key)) || "file";
-    const mediaLabel = typeMap[mediaTypeSimple] || "file";
+    const mediaTypeSimple =
+      mediaType === "application/pdf"
+        ? "document"
+        : Object.keys(typeMap).find((key) => mediaType.includes(key)) || "file";
+    const mediaLabel = typeMap[mediaTypeSimple] || "el archivo";
 
     return {
-      text: `Thanks for the ${mediaLabel}! A team member will review it shortly.`,
+      text: `Gracias por enviar ${mediaLabel}. El equipo lo revisará en breve.`,
       suppress: true,
     };
   }

@@ -408,7 +408,7 @@ describe("Lead / Customer Stories", () => {
 
     // But only if lead has name + location (expecting receipt)
     const noNameLead = makeLead({ location: "Mazatlán", status: "qualifying" });
-    expect(handler.getAckText(noNameLead, "application/pdf").text).toContain("team member");
+    expect(handler.getAckText(noNameLead, "application/pdf").text).toContain("equipo");
   });
 
   it("5. acknowledges non-receipt media (photos, videos, docs) and defers to the human team", () => {
@@ -418,7 +418,7 @@ describe("Lead / Customer Stories", () => {
     // Non-receipt media types get generic team acknowledgment
     const videoAck = handler.getAckText(lead, "video/mp4");
     expect(videoAck.text).toContain("video");
-    expect(videoAck.text).toContain("team member");
+    expect(videoAck.text).toContain("equipo");
     expect(videoAck.suppress).toBe(true);
 
     const audioAck = handler.getAckText(lead, "audio/ogg");
@@ -427,7 +427,7 @@ describe("Lead / Customer Stories", () => {
 
     // Generic file type fallback
     const unknownAck = handler.getAckText(lead, "application/zip");
-    expect(unknownAck.text).toContain("file");
+    expect(unknownAck.text).toContain("archivo");
     expect(unknownAck.suppress).toBe(true);
   });
 
