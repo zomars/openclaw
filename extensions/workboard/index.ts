@@ -3,6 +3,7 @@ import { definePluginEntry } from "./api.js";
 import { registerWorkboardGatewayMethods } from "./runtime-api.js";
 import { registerWorkboardCommand } from "./src/command.js";
 import { WorkboardStore } from "./src/store.js";
+import { createWorkboardTelegramNotifier } from "./src/telegram-notify.js";
 import { createWorkboardTools } from "./src/tools.js";
 
 export default definePluginEntry({
@@ -10,7 +11,9 @@ export default definePluginEntry({
   name: "Workboard",
   description: "Dashboard workboard for agent-owned issues and sessions.",
   register(api) {
-    const store = WorkboardStore.openSqlite();
+    const store = WorkboardStore.openSqlite({
+      eventNotifier: createWorkboardTelegramNotifier(api),
+    });
     registerWorkboardGatewayMethods({ api, store });
     registerWorkboardCommand({ api, store });
     api.registerCli(

@@ -70,6 +70,11 @@ export type {
   WorkboardKeyedStore,
 } from "./persistence-types.js";
 
+export type WorkboardEventNotifier = (
+  card: WorkboardCard,
+  event: WorkboardEvent,
+) => Promise<void> | void;
+
 const POSITION_STEP = 1000;
 const MAX_CARDS = 2000;
 const MAX_CARD_EVENTS = 50;
@@ -2263,6 +2268,7 @@ export class WorkboardStore {
       boards?: WorkboardKeyedStore<PersistedWorkboardBoard>;
       subscriptions?: WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>;
       attachments?: WorkboardKeyedStore<PersistedWorkboardAttachment>;
+      eventNotifier?: WorkboardEventNotifier;
     } = {},
   ) {
     this.boardStore =
@@ -2272,7 +2278,10 @@ export class WorkboardStore {
       (store as unknown as WorkboardKeyedStore<PersistedWorkboardNotificationSubscription>);
     this.attachmentStore =
       stores.attachments ?? (store as unknown as WorkboardKeyedStore<PersistedWorkboardAttachment>);
+    this.eventNotifier = stores.eventNotifier;
   }
+
+  private readonly eventNotifier?: WorkboardEventNotifier;
 
   private async enqueueMutation<T>(run: () => Promise<T>): Promise<T> {
     const result = this.mutationQueue.then(run, run);
@@ -2294,6 +2303,13 @@ export class WorkboardStore {
       }
       return await this.updateCard(id, { metadata: mutate(existing) });
     });
+  }
+
+  private async notifyEvent(card: WorkboardCard, event: WorkboardEvent | undefined): Promise<void> {
+    if (!event || !this.eventNotifier) {
+      return;
+    }
+    await this.eventNotifier(card, event);
   }
 
   private async deleteDetachedAttachments(
@@ -2604,6 +2620,7 @@ export class WorkboardStore {
       ...(!metadataIsEmpty(syncedMetadata) ? { metadata: syncedMetadata } : {}),
     };
     await this.store.register(card.id, { version: 1, card });
+    await this.notifyEvent(card, card.events?.at(-1));
     try {
       for (const parent of parentCards) {
         card = await this.linkCardsDirect(parent.id, card.id, now, {
@@ -2784,6 +2801,7 @@ export class WorkboardStore {
     }
     await this.store.register(next.id, { version: 1, card: next });
     await this.deleteDetachedAttachments(existing, next);
+    await this.notifyEvent(next, next.events.at(-1));
     return next;
   }
 
@@ -4331,12 +4349,13 @@ export class WorkboardStore {
     );
   }
 
-  static openSqlite() {
+  static openSqlite(options: { eventNotifier?: WorkboardEventNotifier } = {}) {
     const stores = createWorkboardSqliteStores();
     return new WorkboardStore(stores.cards, {
       boards: stores.boards,
       subscriptions: stores.subscriptions,
       attachments: stores.attachments,
+      eventNotifier: options.eventNotifier,
     });
   }
 }
