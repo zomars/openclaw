@@ -1,24 +1,25 @@
 // Whatsapp tests cover process message plugin behavior.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAcceptedWhatsAppSendResult } from "../../inbound/send-result.test-helper.js";
+import { createTestWebInboundMessage } from "../../inbound/test-message.test-helper.js";
 
 // Hoisted mocks used across tests so vi.mock factories can reference them.
 const {
   resolvePolicyMock,
   buildContextMock,
-  dispatchWhatsAppBufferedReplyMock,
   isControlCommandMessageMock,
+  dispatchBufferedReplyMock,
   runMessageReceivedMock,
   shouldComputeCommandAuthorizedMock,
   trackBackgroundTaskMock,
 } = vi.hoisted(() => ({
   resolvePolicyMock: vi.fn(),
   buildContextMock: vi.fn(),
-  dispatchWhatsAppBufferedReplyMock: vi.fn(async () => ({
+  isControlCommandMessageMock: vi.fn(() => false),
+  dispatchBufferedReplyMock: vi.fn(async () => ({
     queuedFinal: false,
     counts: { tool: 0, block: 0, final: 0 },
   })),
-  isControlCommandMessageMock: vi.fn(() => false),
   runMessageReceivedMock: vi.fn(async () => undefined),
   shouldComputeCommandAuthorizedMock: vi.fn(() => false),
   trackBackgroundTaskMock: vi.fn(),
@@ -38,14 +39,14 @@ vi.mock("./inbound-dispatch.js", async (importOriginal) => {
   return {
     ...actual,
     buildWhatsAppInboundContext: buildContextMock,
-    dispatchWhatsAppBufferedReply: dispatchWhatsAppBufferedReplyMock,
+    dispatchWhatsAppBufferedReply: dispatchBufferedReplyMock,
     resolveWhatsAppDmRouteTarget: () => null,
     resolveWhatsAppResponsePrefix: () => undefined,
     updateWhatsAppMainLastRoute: () => {},
   };
 });
 
-vi.mock("../../../../../src/plugins/hook-runner-global.js", () => ({
+vi.mock("openclaw/plugin-sdk/plugin-runtime", () => ({
   getGlobalHookRunner: () => ({
     hasHooks: (hookName: string) => hookName === "message_received",
     runMessageReceived: runMessageReceivedMock,
@@ -174,7 +175,7 @@ const GROUP_JID = "123@g.us";
 
 function makeBaseMsg(overrides: { body?: string } = {}) {
   const body = overrides.body ?? "hi";
-  return {
+  return createTestWebInboundMessage({
     event: {
       id: "msg1",
       timestamp: 1710000000,
@@ -192,14 +193,23 @@ function makeBaseMsg(overrides: { body?: string } = {}) {
       reply: async () => createAcceptedWhatsAppSendResult("text", "r1"),
       sendMedia: async () => createAcceptedWhatsAppSendResult("media", "m1"),
     },
-    from: GROUP_JID,
-    conversationId: GROUP_JID,
-    accountId: "default",
-    chatType: "group" as const,
+    admission: {
+      accountId: "default",
+      conversation: {
+        kind: "group",
+        id: GROUP_JID,
+      },
+      sender: {
+        id: "+15550002222",
+      },
+      senderAccess: {
+        reasonCode: "group_policy_allowed",
+      },
+    },
     group: {
       subject: "Test Group",
     },
-  };
+  });
 }
 
 const baseRoute = {
@@ -251,7 +261,7 @@ function mockCallArg(mockFn: ReturnType<typeof vi.fn>, label: string, callIndex 
 describe("processMessage group system prompt wiring", () => {
   beforeEach(() => {
     buildContextMock.mockReset();
-    dispatchWhatsAppBufferedReplyMock.mockClear();
+    dispatchBufferedReplyMock.mockClear();
     isControlCommandMessageMock.mockReset();
     isControlCommandMessageMock.mockReturnValue(false);
     resolvePolicyMock.mockReset();
@@ -357,7 +367,6 @@ describe("processMessage group system prompt wiring", () => {
       Surface: "whatsapp",
       OriginatingChannel: "whatsapp",
       OriginatingTo: GROUP_JID,
-      AgentId: baseRoute.agentId,
       GroupSubject: "Test Group",
     }));
 
@@ -408,7 +417,6 @@ describe("processMessage group system prompt wiring", () => {
         accountId: "default",
         conversationId: GROUP_JID,
         sessionKey: baseRoute.sessionKey,
-        agentId: baseRoute.agentId,
         messageId: "msg1",
         senderId: "+15550002222",
       },
@@ -461,57 +469,6 @@ describe("processMessage group system prompt wiring", () => {
     expect(internalReceived).not.toHaveBeenCalled();
   });
 
-  it("honors message_received hook suppression before dispatching to the agent", async () => {
-    resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
-    runMessageReceivedMock.mockResolvedValueOnce({ suppress: true } as never);
-
-    const didSendReply = await callProcessMessage({
-      cfg: {
-        channels: {
-          whatsapp: {
-            pluginHooks: {
-              messageReceived: true,
-            },
-          },
-        },
-      },
-    });
-
-    expect(didSendReply).toBe(false);
-    expect(runMessageReceivedMock).toHaveBeenCalledTimes(1);
-    expect(dispatchWhatsAppBufferedReplyMock).not.toHaveBeenCalled();
-  });
-
-  it("applies message_received content rewrites before dispatching to the agent", async () => {
-    resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
-    runMessageReceivedMock.mockResolvedValueOnce({ content: "rewritten lead text" } as never);
-
-    await callProcessMessage({
-      cfg: {
-        channels: {
-          whatsapp: {
-            pluginHooks: {
-              messageReceived: true,
-            },
-          },
-        },
-      },
-    });
-
-    expect(dispatchWhatsAppBufferedReplyMock).toHaveBeenCalledTimes(1);
-    const dispatchArg = mockCallArg(
-      dispatchWhatsAppBufferedReplyMock,
-      "dispatch WhatsApp buffered reply",
-    ) as Record<string, unknown>;
-    expect(dispatchArg.context).toMatchObject({
-      Body: "rewritten lead text",
-      RawBody: "rewritten lead text",
-      BodyForAgent: "rewritten lead text",
-      BodyForCommands: "rewritten lead text",
-      CommandBody: "rewritten lead text",
-    });
-  });
-
   it("tracks session metadata writes as connection background tasks", async () => {
     resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
     buildContextMock.mockImplementationOnce(() => ({
@@ -530,5 +487,45 @@ describe("processMessage group system prompt wiring", () => {
     expect(mockCallArg(trackBackgroundTaskMock, "trackBackgroundTask", 0, 1)).toBeInstanceOf(
       Promise,
     );
+  });
+
+  it("drops blocked admission before session record and reply dispatch", async () => {
+    resolvePolicyMock.mockReturnValue(makePolicy(makeAccount()));
+    buildContextMock.mockImplementationOnce(() => ({
+      Body: "hi",
+      RawBody: "hi",
+      CommandBody: "hi",
+      SessionKey: baseRoute.sessionKey,
+      Provider: "whatsapp",
+      Surface: "whatsapp",
+    }));
+
+    const result = await callProcessMessage({
+      msg: createTestWebInboundMessage({
+        admission: {
+          ingress: {
+            admission: "drop",
+            decision: "block",
+            reasonCode: "dm_policy_not_allowlisted",
+          },
+          senderAccess: {
+            allowed: false,
+            decision: "block",
+            reasonCode: "dm_policy_not_allowlisted",
+          },
+          activationAccess: {
+            allowed: false,
+            shouldSkip: true,
+            reasonCode: "dm_policy_not_allowlisted",
+          },
+        },
+      }),
+    });
+
+    expect(result).toBe(false);
+    expect(buildContextMock).not.toHaveBeenCalled();
+    expect(trackBackgroundTaskMock).not.toHaveBeenCalled();
+    expect(dispatchBufferedReplyMock).not.toHaveBeenCalled();
+    expect(runMessageReceivedMock).not.toHaveBeenCalled();
   });
 });

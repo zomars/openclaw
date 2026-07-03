@@ -6,6 +6,7 @@ import type {
   ReplyDispatcher,
 } from "../auto-reply/reply/reply-dispatcher.types.js";
 import type { FinalizedMsgContext } from "../auto-reply/templating.js";
+import type { ChatType } from "../channels/chat-type.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { TtsAutoMode } from "../config/types.tts.js";
 import type { DiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
@@ -18,6 +19,7 @@ import type {
   PluginHookBeforePromptBuildResult,
 } from "./hook-before-agent-start.types.js";
 import type { PluginHookBeforeToolCallResult } from "./hook-before-tool-call-result.js";
+import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { InputGateDecision } from "./hook-decision-types.js";
 import type {
   PluginHookInboundClaimContext,
@@ -46,6 +48,11 @@ export type {
   PluginHookBeforePromptBuildEvent,
   PluginHookBeforePromptBuildResult,
 } from "./hook-before-agent-start.types.js";
+export type {
+  PluginHookChannelChatContext,
+  PluginHookChannelContext,
+  PluginHookChannelSenderContext,
+} from "./hook-channel-context.types.js";
 export {
   PLUGIN_PROMPT_MUTATION_RESULT_FIELDS,
   stripPromptMutationFieldsFromLegacyHookResult,
@@ -259,6 +266,13 @@ export type PluginHookAgentContext = {
   contextWindowSource?: PluginHookContextWindowSource;
   /** Native/configured reference window when a lower cap wins. */
   contextWindowReferenceTokens?: number;
+  /**
+   * @deprecated Core does not populate cross-app sender ids. Channel plugins
+   * should expose channel-specific identities by augmenting `channelContext.sender`.
+   */
+  senderExternalId?: string;
+  /** Channel-owned sender/chat details. Plugins may augment the nested interfaces. */
+  channelContext?: PluginHookChannelContext;
 };
 
 export type PluginHookContextWindowSource =
@@ -477,6 +491,7 @@ export type PluginHookReplyDispatchEvent = {
   originatingTo?: string;
   originatingAccountId?: string;
   originatingThreadId?: string | number;
+  originatingChatType?: ChatType;
   shouldSendToolSummaries: boolean;
   sendPolicy: "allow" | "deny";
   isTailDispatch?: boolean;

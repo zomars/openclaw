@@ -2,17 +2,17 @@
  * Prepares session managers and transcript state before embedded runs.
  */
 import fs from "node:fs/promises";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { serializeJsonlLine, writeJsonlLines } from "../../config/sessions/transcript-jsonl.js";
+import { invalidateSessionFileRepairCache } from "../session-file-repair.js";
 
-type SessionHeaderEntry = { type: "session"; id?: string; cwd?: string };
-type SessionMessageEntry = {
-  type: "message";
-  message?: { role?: string; content?: unknown };
+type SessionHeaderEntry = {
+  type: "session";
+  id?: string;
+  cwd?: string;
+  parentSession?: string;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+type SessionMessageEntry = { type: "message"; message?: { role?: string } };
 
 async function assertExistingHeaderIsReadable(sessionFile: string): Promise<void> {
   const content = await fs.readFile(sessionFile, "utf-8");
@@ -60,6 +60,9 @@ export async function prepareSessionManagerForRun(params: {
     labelsById?: Map<string, unknown>;
     leafId?: string | null;
     wasRecoveredFromCorruptHeader?: () => boolean;
+    clearPreservedOpaqueFileEntries?: () => void;
+    getSerializedFileLinesForRewrite?: () => string[];
+    syncSnapshotAfterHeaderRewrite?: (expectedContent?: string) => void;
   };
 
   const header = sm.fileEntries.find((e): e is SessionHeaderEntry => e.type === "session");
@@ -76,26 +79,37 @@ export async function prepareSessionManagerForRun(params: {
   }
 
   if (params.hadSessionFile && header && !hasAssistant) {
-    if (sm.wasRecoveredFromCorruptHeader?.()) {
+    const preservesForkedBranch =
+      typeof header.parentSession === "string" && header.parentSession.length > 0;
+    if (sm.wasRecoveredFromCorruptHeader?.() || preservesForkedBranch) {
+      // Fork transcripts can intentionally select a user-only or empty branch.
+      // Keep their copied tree so the first run appends at the preserved cursor.
       header.id = params.sessionId;
       header.cwd = params.cwd;
       sm.sessionId = params.sessionId;
       sm.cwd = params.cwd;
-      await writeJsonlLines(params.sessionFile, sm.fileEntries.map(serializeJsonlLine), {
-        mode: 0o600,
-      });
+      const content = await writeJsonlLines(
+        params.sessionFile,
+        sm.getSerializedFileLinesForRewrite?.() ?? sm.fileEntries.map(serializeJsonlLine),
+        {
+          mode: 0o600,
+        },
+      );
       sm.flushed = true;
+      sm.syncSnapshotAfterHeaderRewrite?.(content);
       return;
     }
 
     // Reset file so the first assistant flush includes header+user+assistant in order.
     await assertExistingHeaderIsReadable(params.sessionFile);
     await fs.writeFile(params.sessionFile, "", "utf-8");
+    invalidateSessionFileRepairCache(params.sessionFile);
     header.id = params.sessionId;
     header.cwd = params.cwd;
     sm.sessionId = params.sessionId;
     sm.cwd = params.cwd;
     sm.fileEntries = [header];
+    sm.clearPreservedOpaqueFileEntries?.();
     sm.byId?.clear?.();
     sm.labelsById?.clear?.();
     sm.leafId = null;
@@ -104,34 +118,23 @@ export async function prepareSessionManagerForRun(params: {
   }
 
   if (params.hadSessionFile && header) {
+    const headerChanged = header.id !== params.sessionId || header.cwd !== params.cwd;
     header.id = params.sessionId;
     header.cwd = params.cwd;
     sm.sessionId = params.sessionId;
     sm.cwd = params.cwd;
-    await writeJsonlLines(params.sessionFile, sm.fileEntries.map(serializeJsonlLine), {
-      mode: 0o600,
-    });
-    sm.flushed = true;
-    return;
-  }
-
-  if (params.hadSessionFile) {
-    // Strip trailing empty assistant messages left by aborted runs.
-    // An abort mid-stream can write an assistant entry with content:[] before any
-    // tokens arrive, causing the next "continue" to loop on the same tool calls.
-    const lastEntry = sm.fileEntries[sm.fileEntries.length - 1];
-    const lastMsg = (lastEntry as SessionMessageEntry | undefined)?.message;
-    const isEmptyAssistant =
-      lastEntry?.type === "message" &&
-      lastMsg?.role === "assistant" &&
-      Array.isArray(lastMsg.content) &&
-      (lastMsg.content as unknown[]).length === 0;
-
-    if (isEmptyAssistant) {
-      sm.fileEntries.pop();
-      // Rewrite file without the trailing empty assistant entry.
-      const repaired = sm.fileEntries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-      await fs.writeFile(params.sessionFile, repaired, "utf-8");
+    if (!headerChanged) {
+      sm.flushed = true;
+      return;
     }
+    const content = await writeJsonlLines(
+      params.sessionFile,
+      sm.getSerializedFileLinesForRewrite?.() ?? sm.fileEntries.map(serializeJsonlLine),
+      {
+        mode: 0o600,
+      },
+    );
+    sm.flushed = true;
+    sm.syncSnapshotAfterHeaderRewrite?.(content);
   }
 }
