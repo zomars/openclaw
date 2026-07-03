@@ -332,7 +332,9 @@ function maybeCapture(
 }
 
 function extractText(message: Record<string, unknown> | undefined): string | null {
-  if (!message) return null;
+  if (!message) {
+    return null;
+  }
   const ext = message.extendedTextMessage as Record<string, unknown> | undefined;
   const img = message.imageMessage as Record<string, unknown> | undefined;
   const vid = message.videoMessage as Record<string, unknown> | undefined;
@@ -348,7 +350,9 @@ function extractText(message: Record<string, unknown> | undefined): string | nul
 }
 
 function normalizeTimestamp(value: unknown): number | null {
-  if (typeof value === "number") return value;
+  if (typeof value === "number") {
+    return value;
+  }
   if (typeof value === "string") {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
@@ -373,7 +377,9 @@ function detach(emitter: EventEmitterLike, event: string, listener: (...args: un
 }
 
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function clampInteger(value: number, min: number, max: number): number {
@@ -392,7 +398,7 @@ function summarizeValue(value: unknown): unknown {
     return value;
   }
   try {
-    return JSON.parse(JSON.stringify(value));
+    return structuredClone(value);
   } catch {
     return String(value);
   }

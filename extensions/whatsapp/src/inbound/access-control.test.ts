@@ -352,6 +352,7 @@ describe("fromMe outbound DM suppression", () => {
     });
 
     const result = await checkInboundAccessControl({
+      cfg: getAccessControlTestConfig() as never,
       accountId: "default",
       from: "+15550001111",
       selfE164: "+15550009999",
@@ -378,6 +379,7 @@ describe("fromMe outbound DM suppression", () => {
     });
 
     const result = await checkInboundAccessControl({
+      cfg: getAccessControlTestConfig() as never,
       accountId: "default",
       from: "+15550009999",
       selfE164: "+15550009999",
