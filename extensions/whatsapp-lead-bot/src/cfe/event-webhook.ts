@@ -21,15 +21,24 @@ const QuoteEventTypeSchema = z.enum([
   "calculation.completed",
   "calculation.failed",
   "quote.generated",
+  "quote.opened",
+  "quote.pdf_exported",
+  "payment.started",
+  "payment.paid",
+  "payment.failed",
 ]);
 
 const BaseQuoteEventPayloadSchema = z
   .object({
-    request_id: z.string().trim().min(1),
+    request_id: z.string().trim().min(1).optional(),
   })
   .passthrough();
 
-const TerminalQuoteSuccessPayloadSchema = BaseQuoteEventPayloadSchema.extend({
+const QuoteRequestPayloadSchema = BaseQuoteEventPayloadSchema.extend({
+  request_id: z.string().trim().min(1),
+});
+
+const TerminalQuoteSuccessPayloadSchema = QuoteRequestPayloadSchema.extend({
   quote_number: z.string().trim().min(1),
   pdf_url: z.string().trim().min(1),
   quote_id: z.string().trim().min(1).optional(),
@@ -50,10 +59,30 @@ const TerminalQuoteSuccessPayloadSchema = BaseQuoteEventPayloadSchema.extend({
     .optional(),
 }).passthrough();
 
-const TerminalQuoteFailurePayloadSchema = BaseQuoteEventPayloadSchema.extend({
+const TerminalQuoteFailurePayloadSchema = QuoteRequestPayloadSchema.extend({
   error: z.string().trim().min(1),
   error_code: z.string().trim().min(1).optional(),
   retryable: z.boolean().optional(),
+}).passthrough();
+
+const QuoteExperiencePayloadSchema = BaseQuoteEventPayloadSchema.extend({
+  customer_phone: z.string().trim().min(1).optional(),
+  lead_id: z.string().trim().min(1).optional(),
+  quote_access_token_id: z.string().trim().min(1).optional(),
+  quote_id: z.string().trim().min(1).optional(),
+  quote_number: z.string().trim().min(1).optional(),
+  quote_version_id: z.string().trim().min(1).optional(),
+  payment_id: z.string().trim().min(1).optional(),
+  stripe_checkout_session_id: z.string().trim().min(1).optional(),
+  amount: z.number().finite().optional(),
+  currency: z.string().trim().min(1).optional(),
+  failure_reason: z.string().trim().min(1).optional(),
+}).passthrough();
+
+const ExactQuoteActionPayloadSchema = QuoteExperiencePayloadSchema.extend({
+  quote_id: z.string().trim().min(1),
+  quote_number: z.string().trim().min(1),
+  quote_version_id: z.string().trim().min(1),
 }).passthrough();
 
 const EventEnvelopeSchema = z
@@ -68,12 +97,25 @@ const EventEnvelopeSchema = z
   .strict()
   .superRefine((event, ctx) => {
     const successEvent = event.type === "calculation.completed" || event.type === "quote.generated";
+    const quoteRequestEvent =
+      event.type === "calculation.started" || event.type === "calculation.progress";
+    const exactQuoteActionEvent =
+      event.type === "quote.pdf_exported" ||
+      event.type === "payment.started" ||
+      event.type === "payment.paid" ||
+      event.type === "payment.failed";
     const terminalSchema =
       event.type === "calculation.failed"
         ? TerminalQuoteFailurePayloadSchema
         : successEvent
           ? TerminalQuoteSuccessPayloadSchema
-          : null;
+          : exactQuoteActionEvent
+            ? ExactQuoteActionPayloadSchema
+            : quoteRequestEvent
+              ? QuoteRequestPayloadSchema
+              : event.type === "quote.opened"
+                ? QuoteExperiencePayloadSchema
+                : null;
     if (!terminalSchema) {
       return;
     }

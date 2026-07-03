@@ -5,6 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import type {
+  PluginNextTurnInjectionEnqueueResult,
+  PluginSessionSchedulerJobHandle,
+  PluginSessionTurnScheduleParams,
+} from "../../../../src/plugins/types.js";
 import type { WhatsAppLeadBotConfig } from "../config/schema.js";
 import type { PendingQuoteJobStore, QuoteWebhookEventStore } from "../database.js";
 import { SqliteDatabase } from "../database/connection.js";
@@ -16,6 +21,7 @@ import {
 
 const SECRET = "whsec_test";
 const NOW = 1_772_234_567_000;
+const SCHEDULED_JOB_KIND = "quote-webhook-test";
 
 function sign(rawBody: string, timestamp = NOW): string {
   const digest = createHmac("sha256", SECRET).update(`${timestamp}.${rawBody}`).digest("hex");
@@ -66,6 +72,45 @@ function failedEventBody(eventId = "evt_failed_123"): string {
   });
 }
 
+function quoteOpenedEventBody(eventId = "evt_quote_opened_123"): string {
+  return JSON.stringify({
+    event_id: eventId,
+    type: "quote.opened",
+    source: "solayre.parse-and-quote",
+    subject: "quote_access:qat_123",
+    occurred_at: "2026-07-03T18:25:00Z",
+    payload: {
+      quote_access_token_id: "qat_123",
+      customer_phone: "526121347942",
+      quote_id: "quote_123",
+      quote_number: "SOL20260629-test",
+      quote_version_id: "qv_123",
+    },
+  });
+}
+
+function paymentPaidEventBody(eventId = "evt_payment_paid_123"): string {
+  return JSON.stringify({
+    event_id: eventId,
+    type: "payment.paid",
+    source: "solayre.parse-and-quote",
+    subject: "quote_version:qv_123",
+    occurred_at: "2026-07-03T18:25:00Z",
+    payload: {
+      request_id: "req_123",
+      customer_phone: "526121347942",
+      quote_access_token_id: "qat_123",
+      quote_id: "quote_123",
+      quote_number: "SOL20260629-test",
+      quote_version_id: "qv_123",
+      payment_id: "pay_123",
+      stripe_checkout_session_id: "cs_test_123",
+      amount: 5000,
+      currency: "MXN",
+    },
+  });
+}
+
 function createRes() {
   const headers: Record<string, string> = {};
   const resObj = {
@@ -95,6 +140,29 @@ function createIncomingRequest(chunks: string[]) {
   req.headers = {};
   req.socket = {};
   return req;
+}
+
+function createSessionWorkflow() {
+  const scheduleSessionTurn = vi.fn(
+    async (params: PluginSessionTurnScheduleParams): Promise<PluginSessionSchedulerJobHandle> => ({
+      id: "cron-1",
+      pluginId: "whatsapp-lead-bot",
+      sessionKey: params.sessionKey,
+      kind: SCHEDULED_JOB_KIND,
+    }),
+  );
+  const enqueueNextTurnInjection = vi.fn(
+    async (): Promise<PluginNextTurnInjectionEnqueueResult> => ({
+      enqueued: false,
+      id: "injection-1",
+      sessionKey: "agent:main:whatsapp:526121347942",
+    }),
+  );
+  return {
+    workflow: { enqueueNextTurnInjection, scheduleSessionTurn },
+    scheduleSessionTurn,
+    enqueueNextTurnInjection,
+  };
 }
 
 function baseConfig(): WhatsAppLeadBotConfig {
@@ -230,6 +298,18 @@ function createStore(): QuoteWebhookEventStore &
     async reschedulePendingQuoteJob() {},
     async markPendingQuoteJobDelivered() {},
     async markPendingQuoteJobFailed() {},
+    async getLatestDeliveredQuoteAccess() {
+      return null;
+    },
+    async getDueQuoteWebhookEvents() {
+      return [];
+    },
+    async markQuoteWebhookEventDispatching() {
+      return false;
+    },
+    async markQuoteWebhookEventProcessed() {},
+    async rescheduleQuoteWebhookEvent() {},
+    async deadLetterQuoteWebhookEvent() {},
     async recordQuoteWebhookEvent(input) {
       calls.push(input);
       const duplicate = seen.has(`${input.source}:${input.eventId}`);
@@ -246,6 +326,8 @@ function createStore(): QuoteWebhookEventStore &
           payload_json: JSON.stringify(input.payload),
           status: "accepted",
           duplicate_count: duplicate ? 1 : 0,
+          attempts: 0,
+          next_attempt_at: input.receivedAt ?? NOW,
           first_received_at: input.receivedAt ?? NOW,
           last_received_at: input.receivedAt ?? NOW,
           processed_at: null,
@@ -280,7 +362,10 @@ async function invoke(params: {
     log: { warn: vi.fn(), error: vi.fn() },
   });
 
-  await handler(req, res);
+  await handler(
+    req as unknown as Parameters<ReturnType<typeof createQuoteEventWebhookHandler>>[0],
+    res,
+  );
   return { res, store };
 }
 
@@ -348,13 +433,13 @@ describe("quote event webhook", () => {
   it("schedules the originating agent session for terminal events", async () => {
     const body = eventBody();
     const store = createStore();
-    const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
+    const { workflow, scheduleSessionTurn } = createSessionWorkflow();
 
     const { res } = await invoke({
       body,
       signature: sign(body),
       store,
-      sessionWorkflow: { scheduleSessionTurn },
+      sessionWorkflow: workflow,
     });
 
     expect(res.statusCode).toBe(202);
@@ -393,14 +478,14 @@ describe("quote event webhook", () => {
         invokingAgentId: "main",
         nextPollAt: NOW,
       });
-      const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
+      const { workflow, scheduleSessionTurn } = createSessionWorkflow();
       const body = eventBody("evt_sqlite_123");
 
       const { res } = await invoke({
         body,
         signature: sign(body),
         store: db,
-        sessionWorkflow: { scheduleSessionTurn },
+        sessionWorkflow: workflow,
       });
 
       expect(res.statusCode).toBe(202);
@@ -412,7 +497,7 @@ describe("quote event webhook", () => {
         body,
         signature: sign(body),
         store: db,
-        sessionWorkflow: { scheduleSessionTurn },
+        sessionWorkflow: workflow,
       });
       expect(duplicate.res.statusCode).toBe(202);
       expect(JSON.parse(String(duplicate.res.body))).toMatchObject({
@@ -429,8 +514,7 @@ describe("quote event webhook", () => {
   it("does not resume the agent twice for duplicate terminal events", async () => {
     const body = eventBody();
     const store = createStore();
-    const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
-    const sessionWorkflow = { scheduleSessionTurn };
+    const { workflow: sessionWorkflow, scheduleSessionTurn } = createSessionWorkflow();
 
     await invoke({ body, signature: sign(body), store, sessionWorkflow });
     await invoke({ body, signature: sign(body), store, sessionWorkflow });
@@ -441,13 +525,13 @@ describe("quote event webhook", () => {
   it("accepts failed terminal events with error details", async () => {
     const body = failedEventBody();
     const store = createStore();
-    const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
+    const { workflow, scheduleSessionTurn } = createSessionWorkflow();
 
     const { res } = await invoke({
       body,
       signature: sign(body),
       store,
-      sessionWorkflow: { scheduleSessionTurn },
+      sessionWorkflow: workflow,
     });
 
     expect(res.statusCode).toBe(202);
@@ -461,6 +545,76 @@ describe("quote event webhook", () => {
     expect(store.jobs[0]?.webhook_resumed_at).toBe(NOW);
   });
 
+  it("stores quote experience events without resuming the receipt worker session", async () => {
+    const body = quoteOpenedEventBody();
+    const store = createStore();
+    const { workflow, scheduleSessionTurn } = createSessionWorkflow();
+
+    const { res } = await invoke({
+      body,
+      signature: sign(body),
+      store,
+      sessionWorkflow: workflow,
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(String(res.body))).toMatchObject({
+      ok: true,
+      duplicate: false,
+      eventId: "evt_quote_opened_123",
+    });
+    expect(store.calls).toHaveLength(1);
+    expect(store.calls[0]).toMatchObject({
+      eventType: "quote.opened",
+      requestId: undefined,
+    });
+    expect(scheduleSessionTurn).not.toHaveBeenCalled();
+  });
+
+  it("accepts exact-version payment events for reconciliation", async () => {
+    const body = paymentPaidEventBody();
+    const store = createStore();
+    const { workflow, scheduleSessionTurn } = createSessionWorkflow();
+
+    const { res } = await invoke({
+      body,
+      signature: sign(body),
+      store,
+      sessionWorkflow: workflow,
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(store.calls).toHaveLength(1);
+    expect(store.calls[0]).toMatchObject({
+      eventType: "payment.paid",
+      requestId: "req_123",
+    });
+    expect(scheduleSessionTurn).not.toHaveBeenCalled();
+  });
+
+  it("rejects export and payment events that are not bound to an exact quote version", async () => {
+    const body = JSON.stringify({
+      event_id: "evt_payment_missing_version",
+      type: "payment.paid",
+      source: "solayre.parse-and-quote",
+      payload: {
+        request_id: "req_123",
+        quote_id: "quote_123",
+        quote_number: "SOL20260629-test",
+      },
+    });
+    const store = createStore();
+
+    const { res } = await invoke({ body, signature: sign(body), store });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(String(res.body))).toEqual({
+      ok: false,
+      error: "invalid event envelope",
+    });
+    expect(store.calls).toHaveLength(0);
+  });
+
   it("rejects completed events without quote delivery fields", async () => {
     const body = JSON.stringify({
       event_id: "evt_missing_delivery_fields",
@@ -472,13 +626,13 @@ describe("quote event webhook", () => {
       },
     });
     const store = createStore();
-    const scheduleSessionTurn = vi.fn(async () => ({ id: "cron-1" }));
+    const { workflow, scheduleSessionTurn } = createSessionWorkflow();
 
     const { res } = await invoke({
       body,
       signature: sign(body),
       store,
-      sessionWorkflow: { scheduleSessionTurn },
+      sessionWorkflow: workflow,
     });
 
     expect(res.statusCode).toBe(400);
@@ -607,9 +761,15 @@ describe("quote event webhook", () => {
 
     for (const condition of gateConditions) {
       const missingFields: string[] = [];
-      if (!condition.signingSecret) missingFields.push("signingSecret");
-      if (!condition.publicCallbackUrl) missingFields.push("publicCallbackUrl");
-      if (!condition.source) missingFields.push("source");
+      if (!condition.signingSecret) {
+        missingFields.push("signingSecret");
+      }
+      if (!condition.publicCallbackUrl) {
+        missingFields.push("publicCallbackUrl");
+      }
+      if (!condition.source) {
+        missingFields.push("source");
+      }
       const shouldRegister = condition.enabled && missingFields.length === 0;
       expect(shouldRegister).toBe(condition.expectRegister);
     }
