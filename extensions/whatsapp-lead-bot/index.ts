@@ -18,6 +18,7 @@ import { createQuoteEventWebhookHandler } from "./src/cfe/event-webhook.js";
 import { createParseAndQuoteClient } from "./src/cfe/parse-and-quote-client.js";
 import { createQuoteAccessTokenClient } from "./src/cfe/quote-access-client.js";
 import { QuoteDeliveryWorker } from "./src/cfe/quote-delivery-worker.js";
+import { QuoteEventWorker } from "./src/cfe/quote-event-worker.js";
 import { WhatsAppLeadBotConfigSchema } from "./src/config/schema.js";
 import { withContext } from "./src/context.js";
 import { createLovableCrmClient } from "./src/crm-sync/lovable-client.js";
@@ -636,6 +637,22 @@ const plugin = definePluginEntry({
           console.log(
             `[whatsapp-lead-bot] Quote event webhook registered at ${config.eventWebhook.path}`,
           );
+          const quoteEventWorker = new QuoteEventWorker(
+            {
+              store: db,
+              runtime,
+              agentPhones: config.agentNumbers,
+              log: console,
+            },
+            {
+              retryDelayMs: config.eventWebhook.pollFallbackDelayMs,
+            },
+          );
+          quoteEventWorker.start();
+          if (typeof apiWithUnload.onUnload === "function") {
+            apiWithUnload.onUnload(() => quoteEventWorker.stop());
+          }
+          console.log("[whatsapp-lead-bot] Quote event worker started");
         }
       }
 
