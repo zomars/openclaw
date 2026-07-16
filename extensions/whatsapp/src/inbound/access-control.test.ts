@@ -341,7 +341,7 @@ describe("checkInboundAccessControl pairing grace", () => {
 });
 
 describe("fromMe outbound DM suppression", () => {
-  it("blocks outbound DMs (fromMe) to other numbers — never reaches the agent", async () => {
+  it("observes outbound DMs (fromMe) to other numbers for handoff hooks without dispatching to the agent", async () => {
     setAccessControlTestConfig({
       channels: {
         whatsapp: {
@@ -364,7 +364,15 @@ describe("fromMe outbound DM suppression", () => {
       remoteJid: "15550001111@s.whatsapp.net",
     });
 
-    expect(result.allowed).toBe(false);
+    expectAccepted(result);
+    expect(result.shouldMarkRead).toBe(false);
+    expect(result.isAccountOwnerMessage).toBe(true);
+    expect(result.admission.ingress).toMatchObject({
+      admission: "observe",
+      decision: "allow",
+      decisiveGateId: "whatsapp-from-me-handoff-observe",
+      reasonCode: "account_owner_from_me_handoff_observe",
+    });
     expect(sendMessageMock).not.toHaveBeenCalled();
   });
 

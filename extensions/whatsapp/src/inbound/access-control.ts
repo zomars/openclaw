@@ -18,7 +18,7 @@ export type BlockedInboundAccessControlResult = {
 
 export type AcceptedInboundAccessControlResult = {
   allowed: true;
-  shouldMarkRead: true;
+  shouldMarkRead: boolean;
   isSelfChat: boolean;
   resolvedAccountId: string;
   isAccountOwnerMessage?: boolean; // True when message sent by account owner via WhatsApp Web (fromMe: true)
@@ -126,13 +126,32 @@ export async function checkInboundAccessControl(params: {
   // DM access control (secure defaults): "pairing" (default) / "allowlist" / "open" / "disabled".
   if (!params.group) {
     if (params.isFromMe && !policy.isSamePhone(params.from)) {
-      logWhatsAppVerbose(params.verbose, "Skipping outbound DM (fromMe); no pairing reply needed.");
+      logWhatsAppVerbose(
+        params.verbose,
+        "Observing outbound DM (fromMe) for handoff hooks; no agent dispatch.",
+      );
       return {
-        allowed: false,
+        allowed: true,
         shouldMarkRead: false,
         isSelfChat: policy.isSelfChat,
         resolvedAccountId: policy.account.accountId,
         isAccountOwnerMessage: true,
+        admission: buildWhatsAppInboundAdmission({
+          policy,
+          access: {
+            ...access,
+            ingress: {
+              ...access.ingress,
+              admission: "observe",
+              decision: "allow",
+              decisiveGateId: "whatsapp-from-me-handoff-observe",
+              reasonCode: "account_owner_from_me_handoff_observe",
+            },
+          },
+          isGroup: params.group,
+          conversationId,
+          senderId: admissionSenderId,
+        }),
       };
     }
     if (senderAccess.decision === "block" && senderAccess.reasonCode === "dm_policy_disabled") {
