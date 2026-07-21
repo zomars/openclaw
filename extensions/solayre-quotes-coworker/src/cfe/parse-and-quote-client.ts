@@ -312,7 +312,7 @@ export function createParseAndQuoteClient(
 
       const form = new FormData();
       const blob = new Blob([buffer], { type: detected.mime });
-      form.append("file", blob, `receipt.${detected.ext}`);
+      form.append("files", blob, `receipt.${detected.ext}`);
       form.append("phone_number", phoneNumber);
 
       // Step 1: Submit — expect 202 with requestId

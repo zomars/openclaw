@@ -75,6 +75,8 @@ export interface ProcessCFEReceiptResult {
   pdfPath?: string;
   pdfUrl?: string;
   error?: string;
+  terminal?: boolean;
+  nextAction?: "stop";
 }
 
 function buildAlert(params: {
@@ -210,7 +212,7 @@ export const processCFEReceiptCoworkerTool = {
           requestId: parsed.requestId,
           code: parsed.code,
         });
-        return { success: false, error: parsed.error };
+        return { success: false, error: parsed.error, terminal: true, nextAction: "stop" };
       }
 
       const destPath = path.join(outputDir, `${parsed.quoteNumber}.pdf`);

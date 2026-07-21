@@ -19,6 +19,30 @@ describe("parse-and-quote-client", () => {
     vi.restoreAllMocks();
   });
 
+  it("submits receipts with the parser's multipart files field", async () => {
+    const mediaPath = makePdfFixture();
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ requestId: "req_123", status: "queued" }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const client = createParseAndQuoteClient({
+      apiKey: "test-key",
+      apiUrl: "https://example.supabase.co/functions/v1/parse-and-quote",
+      editQuoteUrl: "https://example.supabase.co/functions/v1/calculate-quote",
+    });
+
+    await client.submitReceipt({ mediaPath, phoneNumber: "5216671234567" });
+
+    const form = fetchMock.mock.calls[0]?.[1]?.body as FormData;
+    expect([...form.keys()]).toEqual(["files", "phone_number"]);
+    expect(form.get("files")).toBeInstanceOf(File);
+    expect(form.get("file")).toBeNull();
+  });
+
   it("uses long polling waitMs when checking async parse-and-quote requests", async () => {
     const mediaPath = makePdfFixture();
     const fetchMock = vi

@@ -117,6 +117,42 @@ describe("processCFEReceiptCoworkerTool", () => {
     expect(sendMessage).toHaveBeenCalledTimes(2); // no additional messages
   });
 
+  it("marks parse failures as terminal so agents stop instead of falling back manually", async () => {
+    const parseAndQuote = vi.fn(async () => ({
+      success: false as const,
+      error: "INVALID_CONTENT_TYPE",
+      code: "INVALID_CONTENT_TYPE",
+      requestId: "req-1",
+    }));
+    const downloadFile = vi.fn(async (_url: string, destPath: string) => destPath);
+    const sendMessage = vi.fn(async () => undefined);
+    const sendAlert = vi.fn(async () => undefined);
+
+    const result = await processCFEReceiptCoworkerTool.execute(
+      {
+        mediaPath: "/tmp/receipt.pdf",
+        coworkerPhone: "5216672350818",
+      },
+      {
+        parseAndQuote,
+        downloadFile,
+        runtime: { sendMessage, sendAlert },
+        outputDir: "/tmp/out",
+        dedupCache: createDedupCache(60_000),
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "INVALID_CONTENT_TYPE",
+      terminal: true,
+      nextAction: "stop",
+    });
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendAlert).toHaveBeenCalledWith(expect.stringContaining("INVALID_CONTENT_TYPE"));
+  });
+
   it("does not dedup across different media paths", async () => {
     const parseAndQuote = vi.fn(async () => quoteResult);
     const downloadFile = vi.fn(async (_url: string, destPath: string) => destPath);

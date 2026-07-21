@@ -180,7 +180,7 @@ function buildReceiptForm(input: {
 
   const form = new FormData();
   const blob = new Blob([buffer], { type: detected.mime });
-  form.append("file", blob, `receipt.${detected.ext}`);
+  form.append("files", blob, `receipt.${detected.ext}`);
   form.append("phone_number", input.phoneNumber);
   return { success: true, form };
 }
