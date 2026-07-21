@@ -25,7 +25,6 @@ import { createLovableCrmClient } from "./src/crm-sync/lovable-client.js";
 import { CrmSyncWorker } from "./src/crm-sync/worker.js";
 import { SqliteDatabase } from "./src/database/connection.js";
 import { HandoffManager } from "./src/handoff/manager.js";
-import { formatDmHistoryBody } from "./src/history/dm-history.js";
 import { createAttributionOverrideHandler } from "./src/hooks/attribution-override.js";
 import { createBeforePromptBuildHandler } from "./src/hooks/before-prompt-build.js";
 import { createBeforeToolCallHandler } from "./src/hooks/before-tool-call.js";
@@ -808,48 +807,6 @@ const plugin = definePluginEntry({
       apiWithUnload.onUnload(() => enrichedSubscribers.delete(enrichedCallback));
     }
     console.log("[lead-bot] Enriched WhatsApp media updater registered");
-
-    // Register a DM history loader so the whatsapp plugin can inject conversation history
-    // into the agent context for direct messages. Same Symbol-based contract.
-    const DM_HISTORY_LOADER_KEY = Symbol.for("openclaw.whatsapp.dmHistoryLoader");
-    type DmHistoryEntry = { sender: string; body: string; timestamp?: number; id?: string };
-    type DmHistoryLoader = (params: {
-      accountId: string;
-      peerJid: string;
-      peerE164: string;
-    }) => DmHistoryEntry[] | undefined;
-    type DmHistoryLoaderState = { loader: DmHistoryLoader | null };
-    const histG = globalThis as unknown as Record<symbol, DmHistoryLoaderState | undefined>;
-    if (!histG[DM_HISTORY_LOADER_KEY]) {
-      histG[DM_HISTORY_LOADER_KEY] = { loader: null };
-    }
-    const dmLoader: DmHistoryLoader = ({ accountId, peerJid }) => {
-      if (config.whatsappAccounts.length > 0 && !config.whatsappAccounts.includes(accountId)) {
-        return undefined;
-      }
-      const rows = db.getMessagesSync(peerJid, 200);
-      if (rows.length === 0) {
-        return undefined;
-      }
-      return rows.map((r) => {
-        const senderLabel = r.from_me === 1 ? "me" : (r.sender_jid ?? r.chat_jid);
-        return {
-          sender: senderLabel,
-          body: formatDmHistoryBody(r),
-          timestamp: r.timestamp * 1000,
-          id: r.id,
-        };
-      });
-    };
-    histG[DM_HISTORY_LOADER_KEY].loader = dmLoader;
-    if (typeof apiWithUnload.onUnload === "function") {
-      apiWithUnload.onUnload(() => {
-        if (histG[DM_HISTORY_LOADER_KEY]?.loader === dmLoader) {
-          histG[DM_HISTORY_LOADER_KEY].loader = null;
-        }
-      });
-    }
-    console.log("[lead-bot] DM history loader registered");
   },
 });
 
