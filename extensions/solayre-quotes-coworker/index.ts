@@ -20,6 +20,7 @@ import {
   sendPreviousQuotePdfCoworkerTool,
 } from "./src/tools/previous-quote.js";
 import { processCFEReceiptCoworkerTool } from "./src/tools/process-cfe-receipt.js";
+import { createTerminalFailureGuard } from "./src/tools/terminal-failure-guard.js";
 
 const plugin = {
   id: "solayre-quotes-coworker",
@@ -102,6 +103,11 @@ const plugin = {
       timeoutMs: config.parseAndQuoteTimeoutMs,
     });
     const downloadFile = createDownloader({ apiKey });
+    const terminalFailureGuard = createTerminalFailureGuard({
+      terminalToolName: processCFEReceiptCoworkerTool.name,
+    });
+    api.on("before_tool_call", terminalFailureGuard.beforeToolCall);
+    api.on("after_tool_call", terminalFailureGuard.afterToolCall);
 
     const registerTool = <TParams, TCtx>(
       label: string,
