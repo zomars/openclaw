@@ -422,9 +422,10 @@ export function createParseAndQuoteClient(deps: ClientDeps): ParseAndQuoteClient
 
       if (status === "error") {
         const errObj = pollJson.error as Record<string, unknown> | undefined;
-        const errMsg = errObj
-          ? (str(errObj.message) ?? str(errObj.code) ?? "unknown error")
-          : "parse-and-quote failed";
+        const errCode = str(errObj?.code) ?? "unknown_error";
+        const errDetail = str(errObj?.error) ?? str(errObj?.message) ?? "";
+        let errMsg = errDetail ? errCode + ": " + errDetail : errCode;
+        if (!errObj) errMsg = "parse-and-quote failed";
         return { success: false, error: errMsg };
       }
 

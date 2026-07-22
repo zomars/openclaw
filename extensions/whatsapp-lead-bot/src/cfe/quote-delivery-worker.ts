@@ -82,7 +82,11 @@ export class QuoteDeliveryWorker {
     try {
       const jobs = await this.deps.store.getDuePendingQuoteJobs(this.now(), this.batchSize);
       for (const job of jobs) {
-        await this.processJob(job);
+        const claimed = await this.deps.store.markPendingQuoteJobDelivering(job.id, this.now());
+        if (!claimed) {
+          continue;
+        }
+        await this.processJob({ ...job, status: "delivering", updated_at: this.now() });
       }
     } catch (err) {
       console.error("[quote-delivery-worker] poll failed:", err);
@@ -137,7 +141,10 @@ export class QuoteDeliveryWorker {
       return;
     }
 
-    const quoteAccess = await this.createShadowQuoteAccess(checked.result.quoteNumber);
+    const quoteAccess = await this.createQuoteAccess(checked.result.quoteNumber);
+    if (quoteAccess) {
+      await this.sendQuoteAccessLink(job, checked.result.quoteNumber, quoteAccess);
+    }
 
     await this.deps.store.markPendingQuoteJobDelivered(job.id, {
       attempts,
@@ -151,24 +158,47 @@ export class QuoteDeliveryWorker {
       quoteId: checked.result.quoteId,
       quoteNumber: checked.result.quoteNumber,
       quoteAccessUrl: quoteAccess?.url ?? null,
+      quoteAccessTokenId: quoteAccess?.tokenId ?? null,
+      quoteAccessExpiresAt: quoteAccess?.expiresAt ?? null,
     });
   }
 
-  private async createShadowQuoteAccess(
-    quoteNumber: string,
-  ): Promise<QuoteAccessTokenResult | null> {
+  private async createQuoteAccess(quoteNumber: string): Promise<QuoteAccessTokenResult | null> {
     if (!this.deps.quoteAccess) {
       return null;
     }
 
     try {
-      return await this.deps.quoteAccess.createQuoteToken({ quoteNumber });
+      return await this.deps.quoteAccess.getOrCreateQuoteToken({ quoteNumber });
+    } catch (err) {
+      console.error(`[quote-delivery-worker] quote URL creation failed for ${quoteNumber}:`, err);
+      return null;
+    }
+  }
+
+  private async sendQuoteAccessLink(
+    job: PendingQuoteJob,
+    quoteNumber: string,
+    quoteAccess: QuoteAccessTokenResult,
+  ): Promise<void> {
+    try {
+      await this.deps.runtime.sendMessage(job.customer_phone, {
+        text: quoteAccessMessage(quoteAccess.url, quoteAccess.expiresAt),
+        metadata: {
+          openclawInitiated: true,
+          source: "quote-delivery-worker:quote-url",
+          requestId: job.request_id,
+          quoteNumber,
+          quoteAccessTokenId: quoteAccess.tokenId,
+          quoteAccessUrl: quoteAccess.url,
+          quoteAccessExpiresAt: quoteAccess.expiresAt,
+        },
+      });
     } catch (err) {
       console.error(
-        `[quote-delivery-worker] shadow quote URL creation failed for ${quoteNumber}:`,
+        `[quote-delivery-worker] quote URL send failed for ${quoteNumber}; PDF delivery remains complete:`,
         err,
       );
-      return null;
     }
   }
 
@@ -205,9 +235,13 @@ export class QuoteDeliveryWorker {
         attempts,
         error,
       });
-      await this.notifyAgents(
-        `Aviso: fallo el procesamiento del recibo CFE para ${job.customer_phone}. Request: ${job.request_id}. Error: ${error}.`,
-      );
+      if (isIncompleteReceiptError(error)) {
+        await this.sendIncompleteReceiptMessage(job);
+      } else {
+        await this.notifyAgents(
+          `Aviso: fallo el procesamiento del recibo CFE para ${job.customer_phone}. Request: ${job.request_id}. Error: ${error}.`,
+        );
+      }
       return;
     }
 
@@ -216,6 +250,21 @@ export class QuoteDeliveryWorker {
       nextPollAt: this.now() + this.pollIntervalMs,
       lastError: error,
     });
+  }
+
+  private async sendIncompleteReceiptMessage(job: PendingQuoteJob): Promise<void> {
+    try {
+      await this.deps.runtime.sendMessage(job.customer_phone, {
+        text: MSG_INCOMPLETE_RECEIPT,
+        metadata: {
+          openclawInitiated: true,
+          source: "quote-delivery-worker:incomplete_receipt",
+          requestId: job.request_id,
+        },
+      });
+    } catch (err) {
+      console.error("[quote-delivery-worker] sendIncompleteReceiptMessage failed:", err);
+    }
   }
 
   private async notifyAgents(text: string): Promise<void> {
@@ -238,7 +287,9 @@ export class QuoteDeliveryWorker {
       attempts: number;
       quoteId?: string | null;
       quoteNumber?: string | null;
+      quoteAccessTokenId?: string | null;
       quoteAccessUrl?: string | null;
+      quoteAccessExpiresAt?: number | null;
       error?: string | null;
     },
   ): void {
@@ -277,7 +328,9 @@ export class QuoteDeliveryWorker {
             attempts: input.attempts,
             quoteId: input.quoteId ?? null,
             quoteNumber: input.quoteNumber ?? null,
+            quoteAccessTokenId: input.quoteAccessTokenId ?? null,
             quoteAccessUrl: input.quoteAccessUrl ?? null,
+            quoteAccessExpiresAt: input.quoteAccessExpiresAt ?? null,
             error: input.error ?? null,
           },
         },
@@ -288,10 +341,51 @@ export class QuoteDeliveryWorker {
   }
 }
 
+const MSG_INCOMPLETE_RECEIPT = [
+  "Gracias por enviar su recibo, pero la foto solo muestra una parte.",
+  "Necesito ver la parte de arriba del recibo donde aparecen:",
+  "\u2022 Su nombre completo",
+  "\u2022 El RPU (n\u00famero de registro)",
+  "\u2022 La tarifa (1, 1A, DAC, etc.)",
+  "\u2022 El n\u00famero de servicio",
+  "",
+  "\u00bfPodr\u00eda tomar una foto donde se vea COMPLETO el recibo? \ud83d\ude4f",
+].join("\n");
+
+function isIncompleteReceiptError(error: string): boolean {
+  return (
+    error.includes("incomplete_receipt") ||
+    error.includes("tariffType") ||
+    error.includes("Cannot read properties of undefined")
+  );
+}
+
 function isTerminalError(error: string): boolean {
   return (
     error.includes("not found") ||
     error.includes("response missing") ||
-    error.includes("parse-and-quote failed")
+    error.includes("parse-and-quote failed") ||
+    error.includes("incomplete_receipt") ||
+    error.includes("tariffType") ||
+    error.includes("Cannot read properties of undefined")
   );
+}
+
+function quoteAccessMessage(url: string, expiresAt: number): string {
+  return [
+    "Aquí tiene el enlace de su cotización personalizada:",
+    url,
+    "",
+    `Puede abrirla desde su celular y compartirla. Expira el ${formatDate(expiresAt)}.`,
+  ].join("\n");
+}
+
+function formatDate(timestampMs: number): string {
+  const formatted = new Intl.DateTimeFormat("es-MX", {
+    timeZone: "America/Mazatlan",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(timestampMs));
+  return formatted;
 }
